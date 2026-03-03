@@ -39,13 +39,14 @@ async def run_migrations(engine: AsyncEngine):
     if not pending_migrations:
         return
 
-    # Backup SQLite database before migration
+    # Backup database before migration
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     if str(engine.url).startswith("sqlite"):
         db_path = engine.url.database
         if db_path and db_path != ":memory:" and os.path.exists(db_path):
             import shutil
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = f"{db_path}.{timestamp}.bak"
             logger.info(f"Pending migrations detected. Backing up SQLite database to {backup_path}")
             try:
@@ -53,6 +54,48 @@ async def run_migrations(engine: AsyncEngine):
             except Exception as e:
                 logger.error(f"Failed to backup database: {e}. Aborting migration.")
                 raise RuntimeError(f"Database backup failed: {e}") from e
+                
+    elif str(engine.url).startswith("postgresql"):
+        import subprocess
+        db_name = engine.url.database or "db"
+        
+        # Store backup in a 'backups' folder in the current working directory
+        backup_dir = os.path.join(os.getcwd(), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = os.path.join(backup_dir, f"{db_name}_{timestamp}.sql")
+        
+        logger.info(f"Pending migrations detected. Backing up PostgreSQL database to {backup_path}")
+        try:
+            # Convert asyncpg/psycopg2 URL to standard postgresql:// for pg_dump
+            pg_url = engine.url.set(drivername="postgresql")
+            
+            # Create a URL without the password so pg_dump falls back to PGPASSWORD
+            url_without_password = pg_url.set(password=None)
+            safe_pg_url = url_without_password.render_as_string(hide_password=False)
+            
+            # Pass password securely via environment variable
+            dump_env = os.environ.copy()
+            if pg_url.password:
+                dump_env["PGPASSWORD"] = pg_url.password
+                
+            # pg_dump streams the remote database to a local file
+            subprocess.run(
+                ["pg_dump", safe_pg_url, "-f", backup_path],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=dump_env
+            )
+            logger.info(f"PostgreSQL backup successfully saved to {backup_path}")
+        except FileNotFoundError:
+            logger.warning("pg_dump command not found in system PATH. Skipping PostgreSQL backup.")
+            logger.warning("Please install PostgreSQL client tools if you want automatic backups.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"pg_dump failed: {e.stderr}. Aborting migration.")
+            raise RuntimeError(f"Database backup failed: {e.stderr}") from e
+        except Exception as e:
+            logger.error(f"Failed to backup PostgreSQL database: {e}. Aborting migration.")
+            raise RuntimeError(f"Database backup failed: {e}") from e
 
     for file in pending_migrations:
         logger.info(f"Applying migration: {file}")
