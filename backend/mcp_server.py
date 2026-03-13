@@ -1065,9 +1065,10 @@ async def search_memory(
     query: str, domain: Optional[str] = None, limit: int = 10
 ) -> str:
     """
-    Search memories by path and content using substring matching.
+    Search memories by path and content using full-text search.
 
-    This uses a simple SQL `LIKE %query%` search. It is **NOT semantic search**.
+    This uses a lexical full-text index. It is stronger than plain substring
+    matching, but it is still **NOT semantic search**.
 
     Args:
         query: Search keywords (substring match)

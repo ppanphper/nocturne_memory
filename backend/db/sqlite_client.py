@@ -13,6 +13,7 @@ Supports both SQLite (local, single-user) and PostgreSQL (remote, multi-device).
 """
 
 import os
+import re
 import uuid as uuid_lib
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -172,6 +173,32 @@ class GlossaryKeyword(Base):
     )
 
     node = relationship("Node")
+
+
+class SearchDocument(Base):
+    """Derived search row for one reachable path of an active node."""
+
+    __tablename__ = "search_documents"
+
+    domain = Column(String(64), primary_key=True, default="core")
+    path = Column(String(512), primary_key=True)
+    node_uuid = Column(
+        String(36),
+        ForeignKey("nodes.uuid", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_id = Column(
+        Integer,
+        ForeignKey("memories.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    uri = Column(Text, nullable=False)
+    content = Column(Text, nullable=False)
+    disclosure = Column(Text, nullable=True)
+    keywords_text = Column(Text, nullable=False, default="")
+    priority = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 # =============================================================================
@@ -1258,6 +1285,8 @@ class SQLiteClient:
                 disclosure,
             )
 
+            await self.refresh_search_documents_for_node(new_uuid, session=session)
+
             return {
                 "id": memory.id,
                 "node_uuid": new_uuid,
@@ -1371,6 +1400,8 @@ class SQLiteClient:
             if content is None:
                 session.add(path_obj)
 
+            await self.refresh_search_documents_for_node(node_uuid, session=session)
+
             return {
                 "domain": domain,
                 "path": path,
@@ -1411,6 +1442,10 @@ class SQLiteClient:
                 update(Memory)
                 .where(Memory.id == target_memory_id)
                 .values(deprecated=False, migrated_to=None)
+            )
+
+            await self.refresh_search_documents_for_node(
+                target_memory.node_uuid, session=session
             )
 
             return {
@@ -1502,6 +1537,12 @@ class SQLiteClient:
             if result["edge_created"]:
                 rows_after["edges"] = [self._serialize_row(result["edge"])]
 
+            await self.refresh_search_documents_for_prefix(
+                new_domain,
+                new_path,
+                session=session,
+            )
+
             return {
                 "new_uri": f"{new_domain}://{new_path}",
                 "target_uri": f"{target_domain}://{target_path}",
@@ -1569,6 +1610,7 @@ class SQLiteClient:
                 )
 
             collector = ChangeCollector()
+            affected_nodes = await self._get_node_uuids_for_prefix(session, domain, path)
             await self._delete_subtree_paths(session, domain, path, collector=collector)
             await session.flush()
 
@@ -1576,6 +1618,9 @@ class SQLiteClient:
             await self._gc_edge_if_pathless(session, target_edge, collector=collector)
 
             await self._gc_node_soft(session, target_node_uuid, collector=collector)
+
+            for node_uuid in affected_nodes:
+                await self.refresh_search_documents_for_node(node_uuid, session=session)
 
             return {
                 "rows_before": collector.to_dict(),
@@ -1651,8 +1696,200 @@ class SQLiteClient:
                 session, parent_uuid, node_uuid, edge_name, priority, disclosure
             )
             await self._insert_path(session, domain, path, edge.id)
+            await self.refresh_search_documents_for_node(node_uuid, session=session)
 
             return {"uri": f"{domain}://{path}", "node_uuid": node_uuid}
+
+    # =========================================================================
+    # Search Index Operations
+    # =========================================================================
+
+    @staticmethod
+    def _normalize_search_query(query: str) -> str:
+        """Normalize user input into token-friendly text for FTS parsers."""
+        normalized = re.sub(r"[:/.\-]+", " ", query).strip()
+        return re.sub(r"\s+", " ", normalized)
+
+    @staticmethod
+    def _to_sqlite_match_query(query: str) -> str:
+        """Convert free text into a conservative FTS5 MATCH expression."""
+        normalized = SQLiteClient._normalize_search_query(query)
+        tokens = [token.replace('"', '""') for token in normalized.split() if token]
+        if not tokens:
+            raw = query.strip().replace('"', '""')
+            return f'"{raw}"' if raw else ""
+        return " AND ".join(f'"{token}"' for token in tokens)
+
+    @staticmethod
+    def _build_search_snippet(content: str, query: str) -> str:
+        """Build a short content snippet around the first literal hit."""
+        if not content:
+            return ""
+
+        query_lower = query.lower()
+        content_lower = content.lower()
+        pos = content_lower.find(query_lower)
+        if pos < 0:
+            fallback = content[:80]
+            return fallback + ("..." if len(content) > 80 else "")
+
+        start = max(0, pos - 30)
+        end = min(len(content), pos + len(query) + 30)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(content) else ""
+        return prefix + content[start:end] + suffix
+
+    async def _build_search_documents_for_node(
+        self, session: AsyncSession, node_uuid: str
+    ) -> List[Dict[str, Any]]:
+        """Materialize search rows for every reachable path of a node."""
+        memory = (
+            await session.execute(
+                select(Memory)
+                .where(Memory.node_uuid == node_uuid, Memory.deprecated == False)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not memory:
+            return []
+
+        path_rows = (
+            await session.execute(
+                select(Path.domain, Path.path, Edge.priority, Edge.disclosure)
+                .select_from(Path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .where(Edge.child_uuid == node_uuid)
+                .order_by(Path.domain, Path.path)
+            )
+        ).all()
+        if not path_rows:
+            return []
+
+        keyword_rows = await session.execute(
+            select(GlossaryKeyword.keyword)
+            .where(GlossaryKeyword.node_uuid == node_uuid)
+            .order_by(GlossaryKeyword.keyword)
+        )
+        keywords_text = " ".join(row[0] for row in keyword_rows if row[0])
+
+        return [
+            {
+                "domain": row.domain,
+                "path": row.path,
+                "node_uuid": node_uuid,
+                "memory_id": memory.id,
+                "uri": f"{row.domain}://{row.path}",
+                "content": memory.content,
+                "disclosure": row.disclosure,
+                "keywords_text": keywords_text,
+                "priority": row.priority,
+            }
+            for row in path_rows
+        ]
+
+    async def _delete_search_documents_for_node(
+        self, session: AsyncSession, node_uuid: str
+    ) -> None:
+        """Remove all derived search rows for a node."""
+        if self.db_type == "sqlite":
+            await session.execute(
+                text("DELETE FROM search_documents_fts WHERE node_uuid = :node_uuid"),
+                {"node_uuid": node_uuid},
+            )
+
+        await session.execute(
+            delete(SearchDocument).where(SearchDocument.node_uuid == node_uuid)
+        )
+
+    async def _insert_search_documents(
+        self, session: AsyncSession, documents: List[Dict[str, Any]]
+    ) -> None:
+        """Insert fresh derived search rows for one node."""
+        if not documents:
+            return
+
+        session.add_all(SearchDocument(**doc) for doc in documents)
+        await session.flush()
+
+        if self.db_type != "sqlite":
+            return
+
+        for doc in documents:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO search_documents_fts (
+                        domain, path, node_uuid, uri, content, disclosure, keywords_text
+                    ) VALUES (
+                        :domain, :path, :node_uuid, :uri, :content, :disclosure, :keywords_text
+                    )
+                    """
+                ),
+                doc,
+            )
+
+    async def refresh_search_documents_for_node(
+        self, node_uuid: str, session: Optional[AsyncSession] = None
+    ) -> None:
+        """Rebuild derived search rows for one node."""
+        async with self._optional_session(session) as session:
+            documents = await self._build_search_documents_for_node(session, node_uuid)
+            await self._delete_search_documents_for_node(session, node_uuid)
+            await self._insert_search_documents(session, documents)
+
+    async def _get_node_uuids_for_prefix(
+        self, session: AsyncSession, domain: str, base_path: str
+    ) -> List[str]:
+        """Collect unique node UUIDs for a path and all descendants."""
+        safe = self._escape_like_literal(base_path)
+        result = await session.execute(
+            select(Edge.child_uuid)
+            .select_from(Path)
+            .join(Edge, Path.edge_id == Edge.id)
+            .where(Path.domain == domain)
+            .where(
+                or_(
+                    Path.path == base_path,
+                    Path.path.like(f"{safe}/%", escape="\\"),
+                )
+            )
+            .distinct()
+        )
+        return [row[0] for row in result.all()]
+
+    async def refresh_search_documents_for_prefix(
+        self,
+        domain: str,
+        base_path: str,
+        session: Optional[AsyncSession] = None,
+    ) -> None:
+        """Rebuild derived search rows for a path subtree."""
+        async with self._optional_session(session) as session:
+            node_uuids = await self._get_node_uuids_for_prefix(session, domain, base_path)
+            for node_uuid in node_uuids:
+                documents = await self._build_search_documents_for_node(session, node_uuid)
+                await self._delete_search_documents_for_node(session, node_uuid)
+                await self._insert_search_documents(session, documents)
+
+    async def rebuild_search_documents(
+        self, session: Optional[AsyncSession] = None
+    ) -> None:
+        """Fully rebuild the derived search index from live graph state."""
+        async with self._optional_session(session) as session:
+            if self.db_type == "sqlite":
+                await session.execute(text("DELETE FROM search_documents_fts"))
+
+            await session.execute(delete(SearchDocument))
+
+            result = await session.execute(
+                select(Edge.child_uuid)
+                .select_from(Path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .distinct()
+            )
+            for (node_uuid,) in result.all():
+                documents = await self._build_search_documents_for_node(session, node_uuid)
+                await self._insert_search_documents(session, documents)
 
     # =========================================================================
     # Search Operations
@@ -1662,65 +1899,108 @@ class SQLiteClient:
         self, query: str, limit: int = 10, domain: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Search memories by path and content.
+        Search memories by path and content using the derived FTS index.
         """
         async with self.session() as session:
-            search_pattern = f"%{query}%"
-
-            stmt = (
-                select(Memory, Edge, Path)
-                .select_from(Path)
-                .join(Edge, Path.edge_id == Edge.id)
-                .join(
-                    Memory,
-                    and_(
-                        Memory.node_uuid == Edge.child_uuid,
-                        Memory.deprecated == False,
-                    ),
-                )
-                .where(
-                    or_(
-                        Path.path.like(search_pattern),
-                        Memory.content.like(search_pattern),
-                    )
-                )
-            )
-
+            candidate_limit = max(limit * 5, limit)
+            params = {"candidate_limit": candidate_limit}
+            domain_clause = ""
             if domain is not None:
-                stmt = stmt.where(Path.domain == domain)
+                params["domain"] = domain
+                domain_clause = "AND sd.domain = :domain"
 
-            stmt = stmt.order_by(Edge.priority.asc()).limit(limit)
-            result = await session.execute(stmt)
+            if self.db_type == "sqlite":
+                match_query = self._to_sqlite_match_query(query)
+                if not match_query:
+                    return []
+
+                params["match_query"] = match_query
+                result = await session.execute(
+                    text(
+                        f"""
+                        SELECT
+                            sd.domain,
+                            sd.path,
+                            sd.node_uuid,
+                            sd.uri,
+                            sd.priority,
+                            sd.content,
+                            bm25(search_documents_fts, 2.5, 2.0, 1.0, 0.75) AS score
+                        FROM search_documents AS sd
+                        JOIN search_documents_fts
+                          ON search_documents_fts.domain = sd.domain
+                         AND search_documents_fts.path = sd.path
+                        WHERE search_documents_fts MATCH :match_query
+                          {domain_clause}
+                        ORDER BY score ASC, sd.priority ASC, length(sd.path) ASC
+                        LIMIT :candidate_limit
+                        """
+                    ),
+                    params,
+                )
+            else:
+                normalized = self._normalize_search_query(query)
+                if not normalized:
+                    return []
+
+                params["ts_query"] = normalized
+                result = await session.execute(
+                    text(
+                        f"""
+                        SELECT
+                            sd.domain,
+                            sd.path,
+                            sd.node_uuid,
+                            sd.uri,
+                            sd.priority,
+                            sd.content,
+                            ts_rank_cd(
+                                to_tsvector(
+                                    'simple',
+                                    coalesce(sd.path, '') || ' ' ||
+                                    coalesce(sd.uri, '') || ' ' ||
+                                    coalesce(sd.content, '') || ' ' ||
+                                    coalesce(sd.disclosure, '') || ' ' ||
+                                    coalesce(sd.keywords_text, '')
+                                ),
+                                websearch_to_tsquery('simple', :ts_query)
+                            ) AS score
+                        FROM search_documents AS sd
+                        WHERE to_tsvector(
+                                'simple',
+                                coalesce(sd.path, '') || ' ' ||
+                                coalesce(sd.uri, '') || ' ' ||
+                                coalesce(sd.content, '') || ' ' ||
+                                coalesce(sd.disclosure, '') || ' ' ||
+                                coalesce(sd.keywords_text, '')
+                              ) @@ websearch_to_tsquery('simple', :ts_query)
+                          {domain_clause}
+                        ORDER BY score DESC, sd.priority ASC, char_length(sd.path) ASC
+                        LIMIT :candidate_limit
+                        """
+                    ),
+                    params,
+                )
 
             matches = []
-            seen_ids = set()
+            seen_nodes = set()
 
-            for memory, edge, path_obj in result.all():
-                if memory.id in seen_ids:
+            for row in result.mappings():
+                if row["node_uuid"] in seen_nodes:
                     continue
-                seen_ids.add(memory.id)
-
-                content_lower = memory.content.lower()
-                query_lower = query.lower()
-                pos = content_lower.find(query_lower)
-
-                if pos >= 0:
-                    start = max(0, pos - 30)
-                    end = min(len(memory.content), pos + len(query) + 30)
-                    snippet = "..." + memory.content[start:end] + "..."
-                else:
-                    snippet = memory.content[:80] + "..."
-
+                seen_nodes.add(row["node_uuid"])
                 matches.append(
                     {
-                        "domain": path_obj.domain,
-                        "path": path_obj.path,
-                        "uri": f"{path_obj.domain}://{path_obj.path}",
-                        "name": path_obj.path.rsplit("/", 1)[-1],
-                        "snippet": snippet,
-                        "priority": edge.priority,
+                        "domain": row["domain"],
+                        "path": row["path"],
+                        "uri": row["uri"],
+                        "name": row["path"].rsplit("/", 1)[-1],
+                        "snippet": self._build_search_snippet(row["content"], query),
+                        "priority": row["priority"],
                     }
                 )
+                if len(matches) >= limit:
+                    break
 
             return matches
 
@@ -2030,6 +2310,8 @@ class SQLiteClient:
                 await session.flush()
             except IntegrityError:
                 raise ValueError(f"Keyword '{keyword}' is already bound to this node")
+
+            await self.refresh_search_documents_for_node(node_uuid, session=session)
             
             row_after = self._serialize_row(entry)
 
@@ -2068,6 +2350,8 @@ class SQLiteClient:
                     GlossaryKeyword.id == entry.id
                 )
             )
+
+            await self.refresh_search_documents_for_node(node_uuid, session=session)
             
             return {
                 "success": True,

@@ -99,10 +99,10 @@ create_memory("core://", "Bluesky 使用规则...", priority=2, title="bluesky_m
 ---
 
 ## `search_memory(query, domain?, limit?)`
-按关键词搜索记忆内容和路径。**子字符串匹配**，不是语义搜索。
+按关键词搜索记忆内容和路径。使用**全文检索**，不是语义搜索。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `query` | `str` | ✅ | 搜索关键词 |
+| `query` | `str` | ✅ | 搜索关键词（词项全文检索） |
 | `domain` | `str` | ❌ | 限定搜索域（如 `"core"`, `"writer"`） |
 | `limit` | `int` | ❌ | 最大返回数量（默认 10） |
