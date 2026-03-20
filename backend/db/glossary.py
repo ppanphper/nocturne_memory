@@ -23,6 +23,7 @@ from .models import (
     GlossaryKeyword,
     serialize_row,
 )
+from .namespace import get_namespace
 
 if TYPE_CHECKING:
     from .database import DatabaseManager
@@ -129,6 +130,7 @@ class GlossaryService:
     async def get_all_glossary(self) -> List[Dict[str, Any]]:
         """Get all glossary entries grouped by keyword, with node URIs."""
         async with self._session() as session:
+            ns = get_namespace()
             result = await session.execute(
                 select(
                     GlossaryKeyword.keyword,
@@ -139,8 +141,16 @@ class GlossaryService:
                 )
                 .select_from(GlossaryKeyword)
                 .join(Node, Node.uuid == GlossaryKeyword.node_uuid)
-                .outerjoin(Edge, Edge.child_uuid == Node.uuid)
-                .outerjoin(Path, Path.edge_id == Edge.id)
+                .outerjoin(
+                    Edge, Edge.child_uuid == Node.uuid
+                )
+                .outerjoin(
+                    Path,
+                    and_(
+                        Path.edge_id == Edge.id,
+                        Path.namespace == ns,
+                    ),
+                )
                 .outerjoin(
                     Memory,
                     and_(
@@ -229,6 +239,7 @@ class GlossaryService:
             return {}
 
         async with self._session() as session:
+            ns = get_namespace()
             result = await session.execute(
                 select(
                     GlossaryKeyword.keyword,
@@ -238,7 +249,13 @@ class GlossaryService:
                 )
                 .select_from(GlossaryKeyword)
                 .outerjoin(Edge, Edge.child_uuid == GlossaryKeyword.node_uuid)
-                .outerjoin(Path, Path.edge_id == Edge.id)
+                .outerjoin(
+                    Path,
+                    and_(
+                        Path.edge_id == Edge.id,
+                        Path.namespace == ns,
+                    ),
+                )
                 .where(GlossaryKeyword.keyword.in_(found_keywords))
                 .order_by(GlossaryKeyword.keyword, Path.domain, Path.path)
             )
