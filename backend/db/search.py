@@ -20,6 +20,7 @@ from .models import (
     SearchDocument,
     escape_like_literal,
 )
+from .namespace import get_namespace
 from .search_terms import build_document_search_terms, expand_query_terms
 
 if TYPE_CHECKING:
@@ -90,9 +91,13 @@ class SearchIndexer:
     # -----------------------------------------------------------------
 
     async def _build_search_documents_for_node(
-        self, session: AsyncSession, node_uuid: str
+        self, session: AsyncSession, node_uuid: str, *, namespace: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Materialize search rows for every reachable path of a node."""
+        """Materialize search rows for every reachable path of a node.
+
+        When *namespace* is given, only builds docs for paths in that namespace.
+        Pass ``None`` to build for ALL namespaces (used by full rebuild).
+        """
         memory = (
             await session.execute(
                 select(Memory)
@@ -103,15 +108,16 @@ class SearchIndexer:
         if not memory:
             return []
 
-        path_rows = (
-            await session.execute(
-                select(Path.domain, Path.path, Edge.priority, Edge.disclosure)
-                .select_from(Path)
-                .join(Edge, Path.edge_id == Edge.id)
-                .where(Edge.child_uuid == node_uuid)
-                .order_by(Path.domain, Path.path)
-            )
-        ).all()
+        path_stmt = (
+            select(Path.namespace, Path.domain, Path.path, Edge.priority, Edge.disclosure)
+            .select_from(Path)
+            .join(Edge, Path.edge_id == Edge.id)
+            .where(Edge.child_uuid == node_uuid)
+        )
+        if namespace is not None:
+            path_stmt = path_stmt.where(Path.namespace == namespace)
+        path_stmt = path_stmt.order_by(Path.domain, Path.path)
+        path_rows = (await session.execute(path_stmt)).all()
         if not path_rows:
             return []
 
@@ -127,6 +133,7 @@ class SearchIndexer:
             uri = f"{row.domain}://{row.path}"
             documents.append(
                 {
+                    "namespace": row.namespace,
                     "domain": row.domain,
                     "path": row.path,
                     "node_uuid": node_uuid,
@@ -147,18 +154,37 @@ class SearchIndexer:
         return documents
 
     async def _delete_search_documents_for_node(
-        self, session: AsyncSession, node_uuid: str
+        self, session: AsyncSession, node_uuid: str, *, namespace: Optional[str] = None
     ) -> None:
-        """Remove all derived search rows for a node."""
-        if self.db_type == "sqlite":
-            await session.execute(
-                text("DELETE FROM search_documents_fts WHERE node_uuid = :node_uuid"),
-                {"node_uuid": node_uuid},
-            )
+        """Remove derived search rows for a node.
 
-        await session.execute(
-            delete(SearchDocument).where(SearchDocument.node_uuid == node_uuid)
-        )
+        When *namespace* is given, only removes docs in that namespace.
+        Pass ``None`` to remove ALL namespaces (used by full rebuild).
+        """
+        if namespace is not None:
+            if self.db_type == "sqlite":
+                await session.execute(
+                    text(
+                        "DELETE FROM search_documents_fts "
+                        "WHERE node_uuid = :node_uuid AND namespace = :namespace"
+                    ),
+                    {"node_uuid": node_uuid, "namespace": namespace},
+                )
+            await session.execute(
+                delete(SearchDocument).where(
+                    SearchDocument.node_uuid == node_uuid,
+                    SearchDocument.namespace == namespace,
+                )
+            )
+        else:
+            if self.db_type == "sqlite":
+                await session.execute(
+                    text("DELETE FROM search_documents_fts WHERE node_uuid = :node_uuid"),
+                    {"node_uuid": node_uuid},
+                )
+            await session.execute(
+                delete(SearchDocument).where(SearchDocument.node_uuid == node_uuid)
+            )
 
     async def _insert_search_documents(
         self, session: AsyncSession, documents: List[Dict[str, Any]]
@@ -178,9 +204,9 @@ class SearchIndexer:
                 text(
                     """
                     INSERT INTO search_documents_fts (
-                        domain, path, node_uuid, uri, content, disclosure, search_terms
+                        namespace, domain, path, node_uuid, uri, content, disclosure, search_terms
                     ) VALUES (
-                        :domain, :path, :node_uuid, :uri, :content, coalesce(:disclosure, ''), :search_terms
+                        :namespace, :domain, :path, :node_uuid, :uri, :content, coalesce(:disclosure, ''), :search_terms
                     )
                     """
                 ),
@@ -190,10 +216,15 @@ class SearchIndexer:
     async def refresh_search_documents_for_node(
         self, node_uuid: str, session: Optional[AsyncSession] = None
     ) -> None:
-        """Rebuild derived search rows for one node."""
+        """Rebuild derived search rows for one node in the current namespace."""
+        ns = get_namespace()
         async with self._optional_session(session) as session:
-            documents = await self._build_search_documents_for_node(session, node_uuid)
-            await self._delete_search_documents_for_node(session, node_uuid)
+            documents = await self._build_search_documents_for_node(
+                session, node_uuid, namespace=ns
+            )
+            await self._delete_search_documents_for_node(
+                session, node_uuid, namespace=ns
+            )
             await self._insert_search_documents(session, documents)
 
     async def get_node_uuids_for_prefix(
@@ -205,6 +236,7 @@ class SearchIndexer:
             select(Edge.child_uuid)
             .select_from(Path)
             .join(Edge, Path.edge_id == Edge.id)
+            .where(Path.namespace == get_namespace())
             .where(Path.domain == domain)
             .where(
                 or_(
@@ -219,7 +251,7 @@ class SearchIndexer:
     async def rebuild_all_search_documents(
         self, session: Optional[AsyncSession] = None
     ) -> None:
-        """Fully rebuild the derived search index from live graph state."""
+        """Fully rebuild the derived search index from live graph state (all namespaces)."""
         async with self._optional_session(session) as session:
             if self.db_type == "sqlite":
                 await session.execute(text("DELETE FROM search_documents_fts"))
@@ -233,7 +265,9 @@ class SearchIndexer:
                 .distinct()
             )
             for (node_uuid,) in result.all():
-                documents = await self._build_search_documents_for_node(session, node_uuid)
+                documents = await self._build_search_documents_for_node(
+                    session, node_uuid, namespace=None
+                )
                 await self._insert_search_documents(session, documents)
 
     # -----------------------------------------------------------------
@@ -245,8 +279,12 @@ class SearchIndexer:
     ) -> List[Dict[str, Any]]:
         """Search memories by path and content using the derived FTS index."""
         async with self._session() as session:
+            ns = get_namespace()
             candidate_limit = max(limit * 5, 50)
-            params = {"candidate_limit": candidate_limit}
+            params: Dict[str, Any] = {
+                "candidate_limit": candidate_limit,
+                "namespace": ns,
+            }
             domain_clause = ""
             if domain is not None:
                 params["domain"] = domain
@@ -269,12 +307,14 @@ class SearchIndexer:
                             sd.priority,
                             sd.content,
                             sd.disclosure,
-                            bm25(search_documents_fts, 0.0, 2.5, 0.0, 2.0, 1.0, 1.0, 0.75) AS score
+                            bm25(search_documents_fts, 0.0, 0.0, 2.5, 0.0, 2.0, 1.0, 1.0, 0.75) AS score
                         FROM search_documents AS sd
                         JOIN search_documents_fts
-                          ON search_documents_fts.domain = sd.domain
+                          ON search_documents_fts.namespace = sd.namespace
+                         AND search_documents_fts.domain = sd.domain
                          AND search_documents_fts.path = sd.path
                         WHERE search_documents_fts MATCH :match_query
+                          AND sd.namespace = :namespace
                           {domain_clause}
                         ORDER BY score ASC, sd.priority ASC, length(sd.path) ASC
                         LIMIT :candidate_limit
@@ -311,7 +351,8 @@ class SearchIndexer:
                                 websearch_to_tsquery('simple', :ts_query)
                             ) AS score
                         FROM search_documents AS sd
-                        WHERE to_tsvector(
+                        WHERE sd.namespace = :namespace
+                          AND to_tsvector(
                                 'simple',
                                 coalesce(sd.path, '') || ' ' ||
                                 coalesce(sd.uri, '') || ' ' ||
