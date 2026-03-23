@@ -1,6 +1,8 @@
 """
-Tests for namespace isolation: two agents using different namespaces
-should have completely independent memory spaces.
+Comprehensive tests for namespace isolation at the service layer.
+
+Covers: CRUD, update, alias cascading, glossary/trigger, search+domain,
+get_children, version chain, GC safety, and backward compatibility.
 """
 
 import pytest
@@ -21,89 +23,255 @@ async def services():
     search = SearchIndexer(db)
     glossary = GlossaryService(db, search)
     graph = GraphService(db, search)
-    yield graph, search, glossary
+    yield graph, search, glossary, db
     await db.close()
 
 
-@pytest.mark.asyncio
-async def test_namespace_isolation_basic(services):
-    """Two agents (ns_a, ns_b) create the same URI without conflict."""
-    graph, search, _ = services
+# ====================================================================
+# 1. Basic CRUD isolation
+# ====================================================================
 
-    # Agent A creates core://agent
+@pytest.mark.asyncio
+async def test_create_same_uri_different_namespaces(services):
+    """Two agents create the same URI without conflict; reads are isolated."""
+    graph, *_ = services
+
     set_namespace("ns_a")
-    result_a = await graph.create_memory(
-        parent_path="",
-        content="I am Agent A.",
-        priority=0,
-        title="agent",
-        domain="core",
-    )
+    result_a = await graph.create_memory("", "I am Agent A.", 0, title="agent", domain="core")
     assert result_a["uri"] == "core://agent"
 
-    # Agent B creates core://agent (same URI, different namespace)
     set_namespace("ns_b")
-    result_b = await graph.create_memory(
-        parent_path="",
-        content="I am Agent B.",
-        priority=0,
-        title="agent",
-        domain="core",
-    )
+    result_b = await graph.create_memory("", "I am Agent B.", 0, title="agent", domain="core")
     assert result_b["uri"] == "core://agent"
 
-    # Agent A can only read its own memory
+    # Independent entities
+    assert result_a["node_uuid"] != result_b["node_uuid"]
+
+    # Read isolation
     set_namespace("ns_a")
     mem_a = await graph.get_memory_by_path("agent", "core")
-    assert mem_a is not None
-    assert mem_a["content"] == "I am Agent A."
+    assert mem_a is not None and mem_a["content"] == "I am Agent A."
 
-    # Agent B can only read its own memory
     set_namespace("ns_b")
     mem_b = await graph.get_memory_by_path("agent", "core")
-    assert mem_b is not None
-    assert mem_b["content"] == "I am Agent B."
-
-    # Verify different node UUIDs (independent entities)
-    assert result_a["node_uuid"] != result_b["node_uuid"]
+    assert mem_b is not None and mem_b["content"] == "I am Agent B."
 
 
 @pytest.mark.asyncio
-async def test_namespace_isolation_index(services):
+async def test_create_hierarchy_isolation(services):
+    """Hierarchical paths in ns_a are invisible to ns_b."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    await graph.create_memory("", "Root A", 0, title="root", domain="core")
+    await graph.create_memory("root", "Child A", 1, title="child", domain="core")
+    await graph.create_memory("root/child", "Grandchild A", 2, title="leaf", domain="core")
+
+    set_namespace("ns_b")
+    await graph.create_memory("", "Root B", 0, title="root", domain="core")
+
+    # ns_b cannot see ns_a's child / grandchild
+    assert await graph.get_memory_by_path("root/child", "core") is None
+    assert await graph.get_memory_by_path("root/child/leaf", "core") is None
+
+    # ns_a sees entire tree
+    set_namespace("ns_a")
+    assert (await graph.get_memory_by_path("root/child/leaf", "core"))["content"] == "Grandchild A"
+
+
+# ====================================================================
+# 2. Update isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_update_isolation(services):
+    """Updating memory in ns_a does not affect ns_b's content or version chain."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    await graph.create_memory("", "Original A", 0, title="note", domain="core")
+
+    set_namespace("ns_b")
+    await graph.create_memory("", "Original B", 0, title="note", domain="core")
+
+    # Update in ns_a
+    set_namespace("ns_a")
+    await graph.update_memory("note", content="Updated A", domain="core")
+
+    set_namespace("ns_a")
+    assert (await graph.get_memory_by_path("note", "core"))["content"] == "Updated A"
+
+    # ns_b untouched
+    set_namespace("ns_b")
+    assert (await graph.get_memory_by_path("note", "core"))["content"] == "Original B"
+
+
+@pytest.mark.asyncio
+async def test_update_version_chain_isolation(services):
+    """Version chain created by update is scoped to its own namespace."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    r = await graph.create_memory("", "V1 A", 0, title="doc", domain="core")
+    uuid_a = r["node_uuid"]
+    await graph.update_memory("doc", content="V2 A", domain="core")
+
+    set_namespace("ns_b")
+    r = await graph.create_memory("", "V1 B", 0, title="doc", domain="core")
+    uuid_b = r["node_uuid"]
+
+    # The two nodes are independent
+    assert uuid_a != uuid_b
+
+    # ns_b still on V1
+    set_namespace("ns_b")
+    mem_b = await graph.get_memory_by_path("doc", "core")
+    assert mem_b["content"] == "V1 B"
+
+
+# ====================================================================
+# 3. Delete isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_delete_does_not_affect_other_namespace(services):
+    """Deleting a path in ns_a leaves ns_b's identical path intact."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    await graph.create_memory("", "A data", 0, title="shared_name", domain="core")
+
+    set_namespace("ns_b")
+    await graph.create_memory("", "B data", 0, title="shared_name", domain="core")
+
+    set_namespace("ns_a")
+    await graph.remove_path("shared_name", "core")
+    assert await graph.get_memory_by_path("shared_name", "core") is None
+
+    set_namespace("ns_b")
+    mem_b = await graph.get_memory_by_path("shared_name", "core")
+    assert mem_b is not None and mem_b["content"] == "B data"
+
+
+@pytest.mark.asyncio
+async def test_delete_parent_cascade_isolation(services):
+    """Deleting a parent in ns_a cascades children only in ns_a, not ns_b."""
+    graph, *_ = services
+
+    for ns in ("ns_a", "ns_b"):
+        set_namespace(ns)
+        await graph.create_memory("", f"Root {ns}", 0, title="parent", domain="core")
+        await graph.create_memory("parent", f"Child {ns}", 1, title="child", domain="core")
+
+    # Delete parent in ns_a (should also remove parent/child in ns_a)
+    set_namespace("ns_a")
+    await graph.remove_path("parent/child", "core")
+    await graph.remove_path("parent", "core")
+
+    set_namespace("ns_a")
+    assert await graph.get_memory_by_path("parent", "core") is None
+    assert await graph.get_memory_by_path("parent/child", "core") is None
+
+    # ns_b's entire subtree is untouched
+    set_namespace("ns_b")
+    assert (await graph.get_memory_by_path("parent", "core"))["content"] == "Root ns_b"
+    assert (await graph.get_memory_by_path("parent/child", "core"))["content"] == "Child ns_b"
+
+
+# ====================================================================
+# 4. Index / get_all_paths isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_get_all_paths_isolation(services):
     """get_all_paths only returns paths from the current namespace."""
-    graph, _, _ = services
+    graph, *_ = services
 
     set_namespace("ns_x")
     await graph.create_memory("", "X content", 0, title="x_mem", domain="core")
+    await graph.create_memory("", "X writer", 0, title="x_doc", domain="writer")
 
     set_namespace("ns_y")
     await graph.create_memory("", "Y content", 0, title="y_mem", domain="core")
 
     set_namespace("ns_x")
     paths_x = await graph.get_all_paths()
-    assert len(paths_x) == 1
-    assert paths_x[0]["path"] == "x_mem"
+    path_strs_x = {p["path"] for p in paths_x}
+    assert "x_mem" in path_strs_x
+    assert "x_doc" in path_strs_x
+    assert "y_mem" not in path_strs_x
 
     set_namespace("ns_y")
     paths_y = await graph.get_all_paths()
-    assert len(paths_y) == 1
-    assert paths_y[0]["path"] == "y_mem"
+    path_strs_y = {p["path"] for p in paths_y}
+    assert "y_mem" in path_strs_y
+    assert "x_mem" not in path_strs_y
 
 
 @pytest.mark.asyncio
-async def test_namespace_isolation_search(services):
+async def test_get_all_paths_domain_filter_isolation(services):
+    """get_all_paths with domain filter respects namespace."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    await graph.create_memory("", "A core", 0, title="a_core", domain="core")
+    await graph.create_memory("", "A writer", 0, title="a_writer", domain="writer")
+
+    set_namespace("ns_b")
+    await graph.create_memory("", "B core", 0, title="b_core", domain="core")
+
+    set_namespace("ns_a")
+    core_paths = await graph.get_all_paths(domain="core")
+    assert len(core_paths) == 1
+    assert core_paths[0]["path"] == "a_core"
+
+    writer_paths = await graph.get_all_paths(domain="writer")
+    assert len(writer_paths) == 1
+    assert writer_paths[0]["path"] == "a_writer"
+
+
+# ====================================================================
+# 5. Recent memories isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_recent_memories_isolation(services):
+    """get_recent_memories only returns memories from the current namespace."""
+    graph, *_ = services
+
+    set_namespace("ns_one")
+    await graph.create_memory("", "Content one", 0, title="one", domain="core")
+
+    set_namespace("ns_two")
+    await graph.create_memory("", "Content two", 0, title="two", domain="core")
+
+    set_namespace("ns_one")
+    recent = await graph.get_recent_memories(limit=10)
+    uris = [r["uri"] for r in recent]
+    assert any("one" in u for u in uris)
+    assert not any("two" in u for u in uris)
+
+    set_namespace("ns_two")
+    recent = await graph.get_recent_memories(limit=10)
+    uris = [r["uri"] for r in recent]
+    assert any("two" in u for u in uris)
+    assert not any("one" in u for u in uris)
+
+
+# ====================================================================
+# 6. Search isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_search_isolation(services):
     """search() only returns results from the current namespace."""
-    graph, search, _ = services
+    graph, search, *_ = services
 
     set_namespace("ns_alpha")
-    await graph.create_memory(
-        "", "The secret alpha protocol", 0, title="alpha_secret", domain="core"
-    )
+    await graph.create_memory("", "The secret alpha protocol", 0, title="alpha_secret", domain="core")
 
     set_namespace("ns_beta")
-    await graph.create_memory(
-        "", "The secret beta protocol", 0, title="beta_secret", domain="core"
-    )
+    await graph.create_memory("", "The secret beta protocol", 0, title="beta_secret", domain="core")
 
     set_namespace("ns_alpha")
     results = await search.search("secret")
@@ -117,59 +285,297 @@ async def test_namespace_isolation_search(services):
 
 
 @pytest.mark.asyncio
-async def test_namespace_isolation_recent(services):
-    """get_recent_memories only returns memories from the current namespace."""
-    graph, _, _ = services
+async def test_search_with_domain_filter_isolation(services):
+    """search(domain=...) respects both domain AND namespace."""
+    graph, search, *_ = services
 
-    set_namespace("ns_one")
-    await graph.create_memory("", "Content one", 0, title="one", domain="core")
+    set_namespace("ns_a")
+    await graph.create_memory("", "Alpha core data", 0, title="a_core", domain="core")
+    await graph.create_memory("", "Alpha writer data", 0, title="a_writer", domain="writer")
 
-    set_namespace("ns_two")
-    await graph.create_memory("", "Content two", 0, title="two", domain="core")
+    set_namespace("ns_b")
+    await graph.create_memory("", "Beta core data", 0, title="b_core", domain="core")
 
-    set_namespace("ns_one")
-    recent = await graph.get_recent_memories(limit=10)
-    assert len(recent) == 1
-    assert "one" in recent[0]["uri"]
+    # ns_a: search domain=core should only find alpha core, not beta core
+    set_namespace("ns_a")
+    results = await search.search("data", domain="core")
+    assert len(results) == 1
+    assert "a_core" in results[0]["uri"]
+
+    # ns_a: search domain=writer should find alpha writer
+    results = await search.search("data", domain="writer")
+    assert len(results) == 1
+    assert "a_writer" in results[0]["uri"]
+
+    # ns_b: search domain=core should only find beta core
+    set_namespace("ns_b")
+    results = await search.search("data", domain="core")
+    assert len(results) == 1
+    assert "b_core" in results[0]["uri"]
+
+    # ns_b: search domain=writer should find nothing
+    results = await search.search("data", domain="writer")
+    assert len(results) == 0
+
+
+# ====================================================================
+# 7. Alias cascade isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_alias_cascade_isolation(services):
+    """Alias subtree paths created in ns_a are NOT visible in ns_b."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    await graph.create_memory("", "Parent node A", 0, title="parent", domain="core")
+    await graph.create_memory("parent", "Child node A", 1, title="child", domain="core")
+    await graph.add_path(
+        new_path="alias_parent", target_path="parent",
+        new_domain="writer", target_domain="core",
+        priority=5,
+    )
+
+    # ns_a should see cascaded alias child
+    set_namespace("ns_a")
+    alias_child = await graph.get_memory_by_path("alias_parent/child", "writer")
+    assert alias_child is not None
+    assert alias_child["content"] == "Child node A"
+
+    # ns_b should see nothing
+    set_namespace("ns_b")
+    assert await graph.get_memory_by_path("alias_parent", "writer") is None
+    assert await graph.get_memory_by_path("alias_parent/child", "writer") is None
+    assert await graph.get_memory_by_path("parent", "core") is None
 
 
 @pytest.mark.asyncio
-async def test_namespace_isolation_delete(services):
-    """Deleting a path in one namespace does not affect another."""
-    graph, _, _ = services
+async def test_alias_in_both_namespaces_independent(services):
+    """Both namespaces can create aliases independently, pointing to their own nodes."""
+    graph, *_ = services
 
-    set_namespace("ns_del_a")
-    await graph.create_memory("", "A data", 0, title="shared_name", domain="core")
+    for ns in ("ns_a", "ns_b"):
+        set_namespace(ns)
+        await graph.create_memory("", f"Root {ns}", 0, title="root", domain="core")
+        await graph.add_path(
+            new_path="root_alias", target_path="root",
+            new_domain="writer", target_domain="core",
+        )
 
-    set_namespace("ns_del_b")
-    await graph.create_memory("", "B data", 0, title="shared_name", domain="core")
+    set_namespace("ns_a")
+    assert (await graph.get_memory_by_path("root_alias", "writer"))["content"] == "Root ns_a"
 
-    # Delete in namespace A
-    set_namespace("ns_del_a")
-    await graph.remove_path("shared_name", "core")
+    set_namespace("ns_b")
+    assert (await graph.get_memory_by_path("root_alias", "writer"))["content"] == "Root ns_b"
 
-    # A sees nothing
-    mem_a = await graph.get_memory_by_path("shared_name", "core")
-    assert mem_a is None
 
-    # B is unaffected
-    set_namespace("ns_del_b")
-    mem_b = await graph.get_memory_by_path("shared_name", "core")
-    assert mem_b is not None
-    assert mem_b["content"] == "B data"
+# ====================================================================
+# 8. Glossary / trigger isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_glossary_isolation(services):
+    """Glossary keywords bound in ns_a do not appear in ns_b."""
+    graph, _, glossary, db = services
+
+    set_namespace("ns_a")
+    r = await graph.create_memory("", "Agent A identity", 0, title="agent", domain="core")
+    node_a = r["node_uuid"]
+    await glossary.add_glossary_keyword("alpha_keyword", node_a)
+
+    set_namespace("ns_b")
+    r = await graph.create_memory("", "Agent B identity", 0, title="agent", domain="core")
+    node_b = r["node_uuid"]
+    await glossary.add_glossary_keyword("beta_keyword", node_b)
+
+    # ns_a's glossary should only contain alpha_keyword
+    set_namespace("ns_a")
+    all_a = await glossary.get_all_glossary()
+    keywords_a = {e["keyword"] for e in all_a}
+    assert "alpha_keyword" in keywords_a
+    assert "beta_keyword" not in keywords_a
+
+    # ns_b's glossary should only contain beta_keyword
+    set_namespace("ns_b")
+    all_b = await glossary.get_all_glossary()
+    keywords_b = {e["keyword"] for e in all_b}
+    assert "beta_keyword" in keywords_b
+    assert "alpha_keyword" not in keywords_b
 
 
 @pytest.mark.asyncio
-async def test_default_namespace_backward_compat(services):
-    """Default namespace (empty string) works for non-namespaced deployments."""
-    graph, _, _ = services
+async def test_glossary_scan_isolation(services):
+    """find_glossary_in_content only matches keywords from the current namespace."""
+    graph, _, glossary, db = services
+
+    set_namespace("ns_a")
+    r = await graph.create_memory("", "Agent A soul", 0, title="soul", domain="core")
+    await glossary.add_glossary_keyword("secret_word", r["node_uuid"])
+
+    set_namespace("ns_b")
+    await graph.create_memory("", "Agent B soul", 0, title="soul", domain="core")
+
+    # Scanning text containing "secret_word" in ns_b should NOT find ns_a's keyword
+    set_namespace("ns_b")
+    matches = await glossary.find_glossary_in_content("This text contains secret_word here")
+    assert len(matches) == 0  # Dict should be empty
+
+    # But in ns_a it should match
+    set_namespace("ns_a")
+    matches = await glossary.find_glossary_in_content("This text contains secret_word here")
+    assert "secret_word" in matches
+    assert len(matches["secret_word"]) == 1
+
+
+# ====================================================================
+# 9. get_children isolation
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_get_children_isolation(services):
+    """get_children returns children only from the current namespace."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    r = await graph.create_memory("", "Root A", 0, title="root", domain="core")
+    root_a_uuid = r["node_uuid"]
+    await graph.create_memory("root", "Child A1", 1, title="c1", domain="core")
+    await graph.create_memory("root", "Child A2", 2, title="c2", domain="core")
+
+    set_namespace("ns_b")
+    r = await graph.create_memory("", "Root B", 0, title="root", domain="core")
+    root_b_uuid = r["node_uuid"]
+    await graph.create_memory("root", "Child B1", 1, title="b1", domain="core")
+
+    # ns_a root should have 2 children
+    set_namespace("ns_a")
+    children_a = await graph.get_children(root_a_uuid, context_domain="core")
+    child_names_a = {c["path"] for c in children_a}
+    assert len(children_a) == 2
+    assert "root/c1" in child_names_a
+    assert "root/c2" in child_names_a
+
+    # ns_b root should have 1 child
+    set_namespace("ns_b")
+    children_b = await graph.get_children(root_b_uuid, context_domain="core")
+    assert len(children_b) == 1
+    assert children_b[0]["path"] == "root/b1"
+
+
+# ====================================================================
+# 10. GC safety across namespaces
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_gc_safety_delete_in_one_ns_does_not_orphan_other(services):
+    """Deleting paths in ns_a should not trigger GC on nodes that ns_b still uses.
+    Since each namespace creates independent nodes, this verifies no cross-contamination."""
+    graph, *_ = services
+
+    set_namespace("ns_a")
+    r_a = await graph.create_memory("", "Shared concept A", 0, title="concept", domain="core")
+    uuid_a = r_a["node_uuid"]
+
+    set_namespace("ns_b")
+    r_b = await graph.create_memory("", "Shared concept B", 0, title="concept", domain="core")
+    uuid_b = r_b["node_uuid"]
+
+    # Delete in ns_a
+    set_namespace("ns_a")
+    await graph.remove_path("concept", "core")
+
+    # ns_b's node is still fully alive
+    set_namespace("ns_b")
+    mem = await graph.get_memory_by_path("concept", "core")
+    assert mem is not None
+    assert mem["content"] == "Shared concept B"
+    assert mem["node_uuid"] == uuid_b
+
+
+# ====================================================================
+# 11. Multi-domain isolation within same namespace
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_multi_domain_within_namespace(services):
+    """Multiple domains in the same namespace work; switching namespace hides all."""
+    graph, *_ = services
+
+    set_namespace("ns_multi")
+    await graph.create_memory("", "Core item", 0, title="item", domain="core")
+    await graph.create_memory("", "Writer item", 0, title="item", domain="writer")
+
+    set_namespace("ns_multi")
+    assert (await graph.get_memory_by_path("item", "core"))["content"] == "Core item"
+    assert (await graph.get_memory_by_path("item", "writer"))["content"] == "Writer item"
+
+    # Different namespace sees nothing
+    set_namespace("ns_other")
+    assert await graph.get_memory_by_path("item", "core") is None
+    assert await graph.get_memory_by_path("item", "writer") is None
+
+
+# ====================================================================
+# 12. Backward compatibility — default empty namespace
+# ====================================================================
+
+@pytest.mark.asyncio
+async def test_default_namespace_full_crud(services):
+    """Default namespace (empty string) supports full CRUD cycle."""
+    graph, search, glossary, _ = services
 
     set_namespace("")
-    result = await graph.create_memory(
-        "", "Default namespace content", 0, title="default_mem", domain="core"
-    )
-    assert result["uri"] == "core://default_mem"
 
-    mem = await graph.get_memory_by_path("default_mem", "core")
-    assert mem is not None
-    assert mem["content"] == "Default namespace content"
+    # Create
+    r = await graph.create_memory("", "Default root", 0, title="root", domain="core")
+    assert r["uri"] == "core://root"
+
+    await graph.create_memory("root", "Default child", 1, title="child", domain="core")
+
+    # Read
+    mem = await graph.get_memory_by_path("root", "core")
+    assert mem is not None and mem["content"] == "Default root"
+
+    child = await graph.get_memory_by_path("root/child", "core")
+    assert child is not None and child["content"] == "Default child"
+
+    # Update
+    await graph.update_memory("root", content="Updated default root", domain="core")
+    assert (await graph.get_memory_by_path("root", "core"))["content"] == "Updated default root"
+
+    # Search
+    results = await search.search("default")
+    assert len(results) >= 1
+
+    # Index
+    paths = await graph.get_all_paths()
+    assert len(paths) >= 2
+
+    # Recent
+    recent = await graph.get_recent_memories(limit=10)
+    assert len(recent) >= 1
+
+    # Delete
+    await graph.remove_path("root/child", "core")
+    assert await graph.get_memory_by_path("root/child", "core") is None
+    assert await graph.get_memory_by_path("root", "core") is not None
+
+
+@pytest.mark.asyncio
+async def test_default_namespace_invisible_to_named_namespace(services):
+    """Data in default namespace is invisible to a named namespace and vice versa."""
+    graph, *_ = services
+
+    set_namespace("")
+    await graph.create_memory("", "Default data", 0, title="shared", domain="core")
+
+    set_namespace("named_ns")
+    assert await graph.get_memory_by_path("shared", "core") is None
+
+    await graph.create_memory("", "Named data", 0, title="shared", domain="core")
+
+    set_namespace("")
+    assert (await graph.get_memory_by_path("shared", "core"))["content"] == "Default data"
+
+    set_namespace("named_ns")
+    assert (await graph.get_memory_by_path("shared", "core"))["content"] == "Named data"

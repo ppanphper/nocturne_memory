@@ -141,10 +141,10 @@ class GlossaryService:
                 )
                 .select_from(GlossaryKeyword)
                 .join(Node, Node.uuid == GlossaryKeyword.node_uuid)
-                .outerjoin(
+                .join(
                     Edge, Edge.child_uuid == Node.uuid
                 )
-                .outerjoin(
+                .join(
                     Path,
                     and_(
                         Path.edge_id == Edge.id,
@@ -248,8 +248,8 @@ class GlossaryService:
                     Path.path,
                 )
                 .select_from(GlossaryKeyword)
-                .outerjoin(Edge, Edge.child_uuid == GlossaryKeyword.node_uuid)
-                .outerjoin(
+                .join(Edge, Edge.child_uuid == GlossaryKeyword.node_uuid)
+                .join(
                     Path,
                     and_(
                         Path.edge_id == Edge.id,
