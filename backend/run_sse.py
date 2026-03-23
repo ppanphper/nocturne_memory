@@ -6,6 +6,7 @@ import uvicorn
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from auth import BearerTokenAuthMiddleware
+from namespace_middleware import NamespaceMiddleware
 from mcp_server import mcp
 
 
@@ -19,11 +20,11 @@ def main():
     # For legacy SSE clients (like some older UI tools or Claude Desktop)
     # This exposes GET /sse and POST /messages/
     sse_asgi_app = mcp.sse_app("/")
-    
+
     # For newer Streamable HTTP clients (like GitHub Copilot type: "http")
     # This exposes GET/POST on /mcp
     streamable_asgi_app = mcp.streamable_http_app()
-    
+
     # Combine routes into one ASGI app
     from starlette.applications import Starlette
     import contextlib
@@ -40,7 +41,7 @@ def main():
     routes.extend(streamable_asgi_app.router.routes)
     combined_app = Starlette(routes=routes, lifespan=combined_lifespan)
 
-    app = BearerTokenAuthMiddleware(combined_app, excluded_paths=[])
+    app = NamespaceMiddleware(BearerTokenAuthMiddleware(combined_app, excluded_paths=[]))
 
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")

@@ -447,6 +447,93 @@ docker compose down -v
 
 </details>
 
+### 🔀 多 Agent 命名空间隔离 (Namespace Isolation)
+
+> **v2.0.0 新增**：在不启动多个实例的情况下，让多个 AI Agent 共享同一个 Nocturne Memory 进程，且记忆完全隔离。
+
+#### 工作原理
+
+命名空间（Namespace）是数据库层面的逻辑隔离机制。每个 Agent 的所有记忆操作（读取、创建、搜索、删除等）都自动限定在其命名空间内，Agent 本身无法感知命名空间的存在，也无法访问其他 Agent 的记忆。
+
+#### 向后兼容
+
+**不配置命名空间时，系统使用默认的空字符串命名空间（`""`），行为与原版完全一致。** 已有数据库在升级后会自动迁移，所有历史数据归入默认命名空间，无需任何手动操作。
+
+#### 使用方式
+
+**方式一：SSE / Streamable HTTP 模式（推荐多 Agent 场景）**
+
+启动 SSE 服务器：
+```bash
+python backend/run_sse.py
+```
+
+通过 HTTP 请求头或 URL 查询参数指定命名空间（优先级：Header > Query Parameter > 默认值）：
+
+```bash
+# 方式 A：通过 X-Namespace 请求头
+curl -H "X-Namespace: agent_a" http://localhost:8000/mcp
+
+# 方式 B：通过 URL 查询参数
+curl http://localhost:8000/mcp?namespace=agent_a
+```
+
+MCP 客户端配置示例（以 Agent A 和 Agent B 为例）：
+
+```json
+{
+  "mcpServers": {
+    "memory_agent_a": {
+      "url": "http://localhost:8000/mcp?namespace=agent_a",
+      "type": "http"
+    },
+    "memory_agent_b": {
+      "url": "http://localhost:8000/mcp?namespace=agent_b",
+      "type": "http"
+    }
+  }
+}
+```
+
+> 也可通过 SSE endpoint 使用：`http://localhost:8000/sse?namespace=agent_a`
+
+**方式二：stdio 模式**
+
+通过环境变量 `NAMESPACE` 指定：
+
+```json
+{
+  "mcpServers": {
+    "nocturne_memory": {
+      "command": "python",
+      "args": ["backend/mcp_server.py"],
+      "env": {
+        "NAMESPACE": "agent_a"
+      }
+    }
+  }
+}
+```
+
+> ⚠️ stdio 模式下每个进程只能绑定一个命名空间。如需多 Agent 隔离，推荐使用 SSE 模式。
+
+#### 隔离范围
+
+以下操作均受命名空间隔离保护：
+
+| 操作 | 隔离说明 |
+|------|---------|
+| `read_memory` | 只能读取本命名空间下的记忆 |
+| `create_memory` | 创建的记忆归属当前命名空间 |
+| `update_memory` | 只能修改本命名空间的记忆 |
+| `delete_memory` | 只能删除本命名空间的路径 |
+| `add_alias` | 别名仅在本命名空间内生效 |
+| `search_memory` | 搜索结果仅包含本命名空间的记忆 |
+| `manage_triggers` | 触发词仅在本命名空间内关联 |
+| `system://index` | 索引仅显示本命名空间的记忆树 |
+| `system://recent` | 最近修改仅显示本命名空间的记录 |
+| `system://glossary` | 豆辞典仅显示本命名空间的绑定 |
+
 ---
 
 ## 📋 System Prompt（系统提示词推荐）

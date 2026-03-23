@@ -39,7 +39,7 @@ TABLE_PKS = {
     "nodes": "uuid",
     "memories": "id",
     "edges": "id",
-    "paths": ("domain", "path"),
+    "paths": ("namespace", "domain", "path"),
     "glossary_keywords": ("keyword", "node_uuid"),
 }
 

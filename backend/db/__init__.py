@@ -13,6 +13,7 @@ from dotenv import load_dotenv, find_dotenv
 
 from .database import DatabaseManager
 from .snapshot import ChangesetStore, get_changeset_store
+from .namespace import get_namespace, set_namespace
 from .models import (
     Base, ROOT_NODE_UUID, Node, Memory, Edge, Path,
     GlossaryKeyword, SearchDocument, ChangeCollector,
@@ -92,6 +93,7 @@ __all__ = [
     "get_search_indexer", "get_glossary_service",
     "close_db",
     "ChangesetStore", "get_changeset_store",
+    "get_namespace", "set_namespace",
     "Base", "ROOT_NODE_UUID", "Node", "Memory", "Edge", "Path",
     "GlossaryKeyword", "SearchDocument", "ChangeCollector",
 ]

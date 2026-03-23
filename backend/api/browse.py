@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from db import get_graph_service, get_glossary_service, get_db_manager
 from db.models import Path as PathModel, Edge as EdgeModel, ROOT_NODE_UUID
+from db.namespace import get_namespace
 from sqlalchemy import select
 
 router = APIRouter(prefix="/browse", tags=["browse"])
@@ -42,6 +43,7 @@ async def list_domains():
                 PathModel.domain,
                 func.count(distinct(PathModel.path)).label("node_count"),
             )
+            .where(PathModel.namespace == get_namespace())
             .where(~PathModel.path.contains("/"))
             .group_by(PathModel.domain)
             .order_by(PathModel.domain)
@@ -140,6 +142,7 @@ async def get_node(
                 select(PathModel.domain, PathModel.path)
                 .select_from(PathModel)
                 .join(EdgeModel, PathModel.edge_id == EdgeModel.id)
+                .where(PathModel.namespace == get_namespace())
                 .where(EdgeModel.child_uuid == memory["node_uuid"])
             )
             aliases = [

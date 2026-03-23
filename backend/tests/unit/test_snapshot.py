@@ -29,10 +29,10 @@ def test_changeset_store_gc_removes_create_then_delete_subtree_noise(tmp_path):
         "nodes": [{"uuid": "node-1"}],
         "memories": [{"id": 1, "node_uuid": "node-1"}],
         "edges": [{"id": 1, "parent_uuid": "root", "child_uuid": "node-1"}],
-        "paths": [{"domain": "core", "path": "temp", "edge_id": 1}],
+        "paths": [{"namespace": "", "domain": "core", "path": "temp", "edge_id": 1}],
     }
     deleted_path = {
-        "paths": [{"domain": "core", "path": "temp", "edge_id": 1}],
+        "paths": [{"namespace": "", "domain": "core", "path": "temp", "edge_id": 1}],
     }
 
     store.record_many(before_state={}, after_state=created)
