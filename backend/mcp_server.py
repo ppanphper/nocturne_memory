@@ -31,6 +31,7 @@ from db import (
     get_search_indexer, close_db,
 )
 from db.snapshot import get_changeset_store
+from db.namespace import get_namespace
 import contextlib
 
 # Load environment variables
@@ -170,8 +171,11 @@ def _record_rows(
     Overwrite semantics are handled by the store:
     - First touch of a PK: stores both before and after.
     - Subsequent touches: overwrites after only; before is frozen.
+
+    Changes are written to the namespace-specific store so that each agent's
+    review queue remains isolated.
     """
-    store = get_changeset_store()
+    store = get_changeset_store(get_namespace())
     store.record_many(before_state, after_state)
 
 
@@ -1048,8 +1052,7 @@ async def manage_triggers(
                     skipped_remove.append(kw)
 
         if added or removed:
-            from db.snapshot import get_changeset_store
-            get_changeset_store().record_many(before_state, after_state)
+            get_changeset_store(get_namespace()).record_many(before_state, after_state)
 
         current = await glossary.get_glossary_for_node(node_uuid)
 

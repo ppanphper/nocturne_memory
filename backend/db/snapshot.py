@@ -1,12 +1,14 @@
 """
-Changeset Store — Single-pool accumulation of row-level before/after states.
+Changeset Store — per-namespace accumulation of row-level before/after states.
 
 Overwrite semantics:
   - First touch of a PK: record both `before` (pre-AI) and `after` (post-AI).
   - Subsequent touches of the same PK: overwrite `after` only; `before` is frozen.
   - Net-zero changes (before == after) are filtered from display automatically.
 
-Storage: one JSON file at `snapshots/changeset.json`.
+Storage:
+  - Default (empty) namespace  -> ``snapshots/changeset.json``  (backward compat)
+  - Named namespace "foo"      -> ``snapshots/changeset_foo.json``
 """
 
 import os
@@ -73,15 +75,25 @@ class ChangesetStore:
 
     The review page reads the frozen `before` and queries live DB state
     to present the user with a clean delta and compute rollback paths.
+
+    When *namespace* is supplied (non-empty string), changes are persisted in
+    ``changeset_<namespace>.json`` so that each namespace has an independent
+    review queue.  An empty namespace (the default) keeps using the original
+    ``changeset.json`` file for full backward compatibility with single-namespace
+    deployments.
     """
 
-    def __init__(self, snapshot_dir: Optional[str] = None):
+    def __init__(self, snapshot_dir: Optional[str] = None, namespace: str = ""):
         self.snapshot_dir = snapshot_dir or DEFAULT_SNAPSHOT_DIR
+        self._namespace = namespace
         Path(self.snapshot_dir).mkdir(parents=True, exist_ok=True)
 
     @property
     def _changeset_path(self) -> str:
-        return os.path.join(self.snapshot_dir, _CHANGESET_FILENAME)
+        # Empty namespace -> "changeset.json" (backward compatible).
+        # Named namespace -> "changeset_<namespace>.json".
+        suffix = f"_{self._namespace}" if self._namespace else ""
+        return os.path.join(self.snapshot_dir, f"changeset{suffix}.json")
 
     def _load(self) -> Dict[str, Any]:
         p = self._changeset_path
@@ -345,12 +357,25 @@ def _parse_uri(uri: str):
     return domain, path
 
 
-# Global singleton
-_store: Optional[ChangesetStore] = None
+# ---------------------------------------------------------------------------
+# Per-namespace store registry
+# ---------------------------------------------------------------------------
+# ``_stores`` maps namespace string -> ChangesetStore instance.
+# The empty-string key corresponds to the default namespace and uses the
+# legacy "changeset.json" filename so that existing single-namespace
+# deployments are unaffected.
+# ---------------------------------------------------------------------------
+
+_stores: Dict[str, ChangesetStore] = {}
 
 
-def get_changeset_store() -> ChangesetStore:
-    global _store
-    if _store is None:
-        _store = ChangesetStore()
-    return _store
+def get_changeset_store(namespace: str = "") -> ChangesetStore:
+    """Return the ChangesetStore for *namespace*, creating it on first call.
+
+    For backward compatibility, calling without arguments returns the store
+    for the default (empty) namespace which persists to ``changeset.json``.
+    """
+    global _stores
+    if namespace not in _stores:
+        _stores[namespace] = ChangesetStore(namespace=namespace)
+    return _stores[namespace]

@@ -6,12 +6,16 @@ export const api = axios.create({
   baseURL: '/api'
 });
 
-// 请求拦截器：自动附加 Bearer Token
+// 请求拦截器：自动附加 Bearer Token 和 X-Namespace
 api.interceptors.request.use((config) => {
+  config.headers = config.headers ?? {};
   const token = localStorage.getItem('api_token');
   if (token) {
-    config.headers = config.headers ?? {};
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  const ns = localStorage.getItem('selected_namespace');
+  if (ns) {
+    config.headers['X-Namespace'] = ns;
   }
   return config;
 });
@@ -51,5 +55,8 @@ export const clearAll = () =>
 
 export const getDomains = () =>
   api.get('/browse/domains').then(res => res.data);
+
+export const getNamespaces = () =>
+  api.get('/browse/namespaces').then(res => res.data);
 
 export default api;

@@ -20,6 +20,11 @@ from db.snapshot import get_changeset_store, _make_row_key
 from db import get_graph_service, get_search_indexer, get_db_manager
 from db.namespace import get_namespace
 
+
+def _get_ns_store():
+    """Return the ChangesetStore for the current request's namespace."""
+    return get_changeset_store(get_namespace())
+
 router = APIRouter(prefix="/review", tags=["review"])
 
 
@@ -287,7 +292,7 @@ async def list_groups():
     It dynamically groups rows, resolves URIs for display, and determines 
     the highest-level table affected (node > memory > edge > path).
     """
-    store = get_changeset_store()
+    store = _get_ns_store()
     all_rows_dict = store.get_all_rows_dict()
     all_rows = list(all_rows_dict.values())
     changed_rows = store.get_changed_rows()
@@ -485,7 +490,7 @@ async def get_group_diff(node_uuid: str):
     
     Used by the review UI to highlight content modifications or metadata changes.
     """
-    store = get_changeset_store()
+    store = _get_ns_store()
     all_rows_dict = store.get_all_rows_dict()
     all_rows = list(all_rows_dict.values())
     changed_rows = store.get_changed_rows()
@@ -634,7 +639,7 @@ async def rollback_group(node_uuid: str):
     
     Finally, purges all related rows from the snapshot changeset.
     """
-    store = get_changeset_store()
+    store = _get_ns_store()
     all_rows_dict = store.get_all_rows_dict()
     all_rows = list(all_rows_dict.values())
     changed_rows = store.get_changed_rows()
@@ -840,7 +845,7 @@ async def approve_group(node_uuid: str):
     This does not touch the DB; it simply clears the tracked rows from the
     changeset JSON, indicating the human has reviewed and accepted them.
     """
-    store = get_changeset_store()
+    store = _get_ns_store()
     all_rows_dict = store.get_all_rows_dict()
     all_rows = list(all_rows_dict.values())
     changed_rows = store.get_changed_rows()
@@ -882,7 +887,7 @@ async def approve_group(node_uuid: str):
 @router.delete("")
 async def clear_all():
     """Approve/Integrate all pending changes globally by emptying the changeset."""
-    store = get_changeset_store()
+    store = _get_ns_store()
     count = store.clear_all()
     if count == 0:
         raise HTTPException(404, "No pending changes")
