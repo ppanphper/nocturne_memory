@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from api import review_router, browse_router, maintenance_router
 from auth import BearerTokenAuthMiddleware
+from namespace_middleware import NamespaceMiddleware
 from db import get_db_manager, close_db
 from health import router as health_router
 
@@ -39,6 +40,8 @@ app.add_middleware(
     BearerTokenAuthMiddleware,
     excluded_paths=["/health"],
 )
+
+app.add_middleware(NamespaceMiddleware)
 
 # CORS设置
 app.add_middleware(

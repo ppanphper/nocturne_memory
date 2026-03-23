@@ -18,6 +18,7 @@ from models import (
 from .utils import get_text_diff
 from db.snapshot import get_changeset_store, _make_row_key
 from db import get_graph_service, get_search_indexer, get_db_manager
+from db.namespace import get_namespace
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -364,6 +365,7 @@ async def list_groups():
                 db_res = await session.execute(
                     select(PathModel.domain, PathModel.path)
                     .join(Edge, PathModel.edge_id == Edge.id)
+                    .where(PathModel.namespace == get_namespace())
                     .where(Edge.child_uuid == node_uuid)
                     .limit(1)
                 )
@@ -572,6 +574,7 @@ async def get_group_diff(node_uuid: str):
             db_res = await session.execute(
                 select(PathModel.domain, PathModel.path)
                 .join(Edge, PathModel.edge_id == Edge.id)
+                .where(PathModel.namespace == get_namespace())
                 .where(Edge.child_uuid == node_uuid)
             )
             for db_row in db_res:
