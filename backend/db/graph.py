@@ -245,6 +245,15 @@ class GraphService:
 
                 path_obj = self._pick_best_path(all_paths, context_domain, prefix)
 
+                # If this edge has no Path in the current namespace, the child
+                # node belongs to a different namespace.  Skip it rather than
+                # falling back to edge.name, which would expose cross-namespace
+                # nodes to the caller.
+                # Single-namespace deployments are unaffected: every edge always
+                # has at least one Path in the (only) namespace.
+                if path_obj is None:
+                    continue
+
                 approx_children_count = approx_children_count_map.get(
                     edge.child_uuid, 0
                 )
@@ -254,8 +263,8 @@ class GraphService:
                         "node_uuid": edge.child_uuid,
                         "edge_id": edge.id,
                         "name": edge.name,
-                        "domain": path_obj.domain if path_obj else "core",
-                        "path": path_obj.path if path_obj else edge.name,
+                        "domain": path_obj.domain,
+                        "path": path_obj.path,
                         "content_snippet": memory.content[:100] + "..."
                         if len(memory.content) > 100
                         else memory.content,

@@ -1,13 +1,62 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { ShieldCheck, Database, LayoutGrid, Sparkles } from 'lucide-react';
+import { ShieldCheck, Database, LayoutGrid, Sparkles, Layers } from 'lucide-react';
 import clsx from 'clsx';
 
 import ReviewPage from './features/review/ReviewPage';
 import MemoryBrowser from './features/memory/MemoryBrowser';
 import MaintenancePage from './features/maintenance/MaintenancePage';
 import TokenAuth from './components/TokenAuth';
-import { AUTH_ERROR_EVENT } from './lib/api';
+import { AUTH_ERROR_EVENT, getNamespaces } from './lib/api';
+
+// ---------------------------------------------------------------------------
+// NamespaceSelector — fetches available namespaces and lets the user switch.
+// Stores the selection in localStorage so all API requests carry X-Namespace.
+// ---------------------------------------------------------------------------
+function NamespaceSelector() {
+  const [namespaces, setNamespaces] = useState([]);
+  const [selected, setSelected] = useState(
+    () => localStorage.getItem('selected_namespace') ?? ''
+  );
+
+  useEffect(() => {
+    getNamespaces()
+      .then(setNamespaces)
+      .catch(() => setNamespaces([]));
+  }, []);
+
+  const handleChange = (e) => {
+    const ns = e.target.value;
+    setSelected(ns);
+    if (ns) {
+      localStorage.setItem('selected_namespace', ns);
+    } else {
+      localStorage.removeItem('selected_namespace');
+    }
+    // Reload so every page re-fetches data for the new namespace.
+    window.location.reload();
+  };
+
+  // Only render the selector when multiple namespaces exist (multi-agent setup).
+  if (namespaces.length <= 1) return null;
+
+  return (
+    <div className="flex items-center gap-2 ml-auto text-sm">
+      <Layers size={14} className="text-slate-400 flex-shrink-0" />
+      <select
+        value={selected}
+        onChange={handleChange}
+        className="bg-slate-800 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        title="Switch agent namespace"
+      >
+        <option value="">(default)</option>
+        {namespaces.filter(ns => ns !== '').map(ns => (
+          <option key={ns} value={ns}>{ns}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 function Layout() {
   return (
@@ -53,6 +102,8 @@ function Layout() {
             Brain Cleanup
           </NavLink>
         </nav>
+
+        <NamespaceSelector />
       </div>
 
       {/* Main Area */}

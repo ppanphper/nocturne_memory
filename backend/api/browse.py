@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from db import get_graph_service, get_glossary_service, get_db_manager
 from db.models import Path as PathModel, Edge as EdgeModel, ROOT_NODE_UUID
 from db.namespace import get_namespace
-from sqlalchemy import select
+from sqlalchemy import select, distinct
 
 router = APIRouter(prefix="/browse", tags=["browse"])
 
@@ -29,6 +29,23 @@ class GlossaryAdd(BaseModel):
 class GlossaryRemove(BaseModel):
     keyword: str
     node_uuid: str
+
+
+@router.get("/namespaces")
+async def list_namespaces():
+    """Return all distinct namespaces that exist in the paths table.
+
+    Used by the Admin Dashboard namespace selector so the user can switch
+    between agent memory spaces without knowing the exact strings upfront.
+    An empty-string namespace is returned as "" and corresponds to the
+    default (single-agent) namespace.
+    """
+    db = get_db_manager()
+    async with db.session() as session:
+        result = await session.execute(
+            select(distinct(PathModel.namespace)).order_by(PathModel.namespace)
+        )
+        return [row[0] for row in result.all()]
 
 
 @router.get("/domains")
