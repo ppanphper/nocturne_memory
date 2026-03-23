@@ -10,50 +10,88 @@ import TokenAuth from './components/TokenAuth';
 import { AUTH_ERROR_EVENT, getNamespaces } from './lib/api';
 
 // ---------------------------------------------------------------------------
-// NamespaceSelector — fetches available namespaces and lets the user switch.
-// Stores the selection in localStorage so all API requests carry X-Namespace.
+// NamespaceSelector — lets the user switch between agent namespaces.
+//
+// The selector is always visible so that users can manually enter a namespace
+// even before any memories have been written (e.g. after a fresh deployment).
+// Known namespaces fetched from the DB are offered as dropdown options, but
+// the user can also type a custom value into the input box.
+//
+// Selected namespace is stored in localStorage; the axios interceptor in
+// api.js attaches it as X-Namespace on every request.
 // ---------------------------------------------------------------------------
 function NamespaceSelector() {
-  const [namespaces, setNamespaces] = useState([]);
+  const [knownNamespaces, setKnownNamespaces] = useState([]);
   const [selected, setSelected] = useState(
     () => localStorage.getItem('selected_namespace') ?? ''
   );
+  const [inputValue, setInputValue] = useState(
+    () => localStorage.getItem('selected_namespace') ?? ''
+  );
+  const [showInput, setShowInput] = useState(false);
 
   useEffect(() => {
     getNamespaces()
-      .then(setNamespaces)
-      .catch(() => setNamespaces([]));
+      .then(nsList => setKnownNamespaces(nsList.filter(ns => ns !== '')))
+      .catch(() => setKnownNamespaces([]));
   }, []);
 
-  const handleChange = (e) => {
-    const ns = e.target.value;
-    setSelected(ns);
-    if (ns) {
-      localStorage.setItem('selected_namespace', ns);
+  const applyNamespace = (ns) => {
+    const trimmed = ns.trim();
+    setSelected(trimmed);
+    setInputValue(trimmed);
+    if (trimmed) {
+      localStorage.setItem('selected_namespace', trimmed);
     } else {
       localStorage.removeItem('selected_namespace');
     }
-    // Reload so every page re-fetches data for the new namespace.
     window.location.reload();
   };
 
-  // Only render the selector when multiple namespaces exist (multi-agent setup).
-  if (namespaces.length <= 1) return null;
+  const handleSelectChange = (e) => {
+    const val = e.target.value;
+    if (val === '__custom__') {
+      setShowInput(true);
+      return;
+    }
+    applyNamespace(val);
+  };
+
+  const handleInputKeyDown = (e) => {
+    if (e.key === 'Enter') applyNamespace(inputValue);
+    if (e.key === 'Escape') setShowInput(false);
+  };
+
+  const activeLabel = selected || '(default)';
 
   return (
     <div className="flex items-center gap-2 ml-auto text-sm">
       <Layers size={14} className="text-slate-400 flex-shrink-0" />
-      <select
-        value={selected}
-        onChange={handleChange}
-        className="bg-slate-800 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
-        title="Switch agent namespace"
-      >
-        <option value="">(default)</option>
-        {namespaces.filter(ns => ns !== '').map(ns => (
-          <option key={ns} value={ns}>{ns}</option>
-        ))}
-      </select>
+      {showInput ? (
+        <input
+          autoFocus
+          type="text"
+          value={inputValue}
+          onChange={e => setInputValue(e.target.value)}
+          onKeyDown={handleInputKeyDown}
+          onBlur={() => setShowInput(false)}
+          placeholder="namespace (Enter to apply)"
+          className="bg-slate-800 border border-indigo-500 text-slate-200 rounded px-2 py-1 text-xs w-40 focus:outline-none"
+        />
+      ) : (
+        <select
+          value={selected}
+          onChange={handleSelectChange}
+          className="bg-slate-800 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          title={`Current namespace: ${activeLabel}`}
+        >
+          <option value="">(default)</option>
+          {knownNamespaces.map(ns => (
+            <option key={ns} value={ns}>{ns}</option>
+          ))}
+          <option value="__custom__">+ enter custom…</option>
+        </select>
+      )}
     </div>
   );
 }
