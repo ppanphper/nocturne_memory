@@ -82,6 +82,12 @@ VALID_DOMAINS = [
     for d in os.getenv("VALID_DOMAINS", "core,writer,game,notes,system").split(",")
 ]
 DEFAULT_DOMAIN = "core"
+PUBLIC_READONLY_MCP = os.getenv("PUBLIC_READONLY_MCP", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # =============================================================================
 # Core Memories Configuration
@@ -177,6 +183,17 @@ def _record_rows(
     """
     store = get_changeset_store(get_namespace())
     store.record_many(before_state, after_state)
+
+
+def write_tool():
+    """Conditionally register mutating tools for public read-only deployments."""
+
+    def decorator(func):
+        if PUBLIC_READONLY_MCP:
+            return func
+        return mcp.tool()(func)
+
+    return decorator
 
 
 # =============================================================================
@@ -624,7 +641,7 @@ async def read_memory(uri: str) -> str:
         return f"Error: {str(e)}"
 
 
-@mcp.tool()
+@write_tool()
 async def create_memory(
     parent_uri: str,
     content: str,
@@ -694,7 +711,7 @@ async def create_memory(
         return f"Error: {str(e)}"
 
 
-@mcp.tool()
+@write_tool()
 async def update_memory(
     uri: str,
     old_string: Optional[str] = None,
@@ -848,7 +865,7 @@ async def update_memory(
         return f"Error: {str(e)}"
 
 
-@mcp.tool()
+@write_tool()
 async def delete_memory(uri: str) -> str:
     """
     通过切断 URI 路径来“流放”一段记忆。一旦删除，通往该内容的路径将永久消失。
@@ -902,7 +919,7 @@ async def delete_memory(uri: str) -> str:
         return f"Error: {str(e)}"
 
 
-@mcp.tool()
+@write_tool()
 async def add_alias(
     new_uri: str, target_uri: str, priority: int = 0, disclosure: Optional[str] = None
 ) -> str:
@@ -959,7 +976,7 @@ async def add_alias(
         return f"Error: {str(e)}"
 
 
-@mcp.tool()
+@write_tool()
 async def manage_triggers(
     uri: str,
     add: Optional[List[str]] = None,
