@@ -22,7 +22,7 @@
 <br/><sub><b>Memory Explorer — 树状浏览，所有记忆一目了然</b></sub>
 </td>
 <td align="center">
-<a href="docs/images/FireShot%20Capture%20084%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20084%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
+<a href="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png" width="400" /></a>
 <br/><sub><b>Memory Detail — 实时编辑内容、元数据与触发条件</b></sub>
 </td>
 </tr>
