@@ -23,7 +23,6 @@ from .models import (
     GlossaryKeyword,
     serialize_row,
 )
-from .namespace import get_namespace
 
 if TYPE_CHECKING:
     from .database import DatabaseManager
@@ -45,7 +44,7 @@ class GlossaryService:
         self._fingerprint = None
 
     async def add_glossary_keyword(
-        self, keyword: str, node_uuid: str
+        self, keyword: str, node_uuid: str, namespace: str = ""
     ) -> Dict[str, Any]:
         """Bind a glossary keyword to a node."""
         keyword = keyword.strip()
@@ -66,7 +65,7 @@ class GlossaryService:
                 raise ValueError(f"Keyword '{keyword}' is already bound to this node")
 
             await self._search.refresh_search_documents_for_node(
-                node_uuid, session=session
+                node_uuid, session=session, namespace=namespace
             )
 
             row_after = serialize_row(entry)
@@ -80,7 +79,7 @@ class GlossaryService:
             }
 
     async def remove_glossary_keyword(
-        self, keyword: str, node_uuid: str
+        self, keyword: str, node_uuid: str, namespace: str = ""
     ) -> Dict[str, Any]:
         """Remove a glossary keyword binding."""
         keyword = keyword.strip()
@@ -108,7 +107,7 @@ class GlossaryService:
             )
 
             await self._search.refresh_search_documents_for_node(
-                node_uuid, session=session
+                node_uuid, session=session, namespace=namespace
             )
 
             return {
@@ -127,10 +126,9 @@ class GlossaryService:
             )
             return [row[0] for row in result.all()]
 
-    async def get_all_glossary(self) -> List[Dict[str, Any]]:
+    async def get_all_glossary(self, namespace: str = "") -> List[Dict[str, Any]]:
         """Get all glossary entries grouped by keyword, with node URIs."""
         async with self._session() as session:
-            ns = get_namespace()
             result = await session.execute(
                 select(
                     GlossaryKeyword.keyword,
@@ -148,7 +146,7 @@ class GlossaryService:
                     Path,
                     and_(
                         Path.edge_id == Edge.id,
-                        Path.namespace == ns,
+                        Path.namespace == namespace,
                     ),
                 )
                 .outerjoin(
@@ -183,7 +181,7 @@ class GlossaryService:
             ]
 
     async def find_glossary_in_content(
-        self, content: str
+        self, content: str, namespace: str = ""
     ) -> Dict[str, List[Dict[str, str]]]:
         """Scan content for glossary keywords using Aho-Corasick.
 
@@ -239,7 +237,6 @@ class GlossaryService:
             return {}
 
         async with self._session() as session:
-            ns = get_namespace()
             result = await session.execute(
                 select(
                     GlossaryKeyword.keyword,
@@ -253,7 +250,7 @@ class GlossaryService:
                     Path,
                     and_(
                         Path.edge_id == Edge.id,
-                        Path.namespace == ns,
+                        Path.namespace == namespace,
                     ),
                 )
                 .where(GlossaryKeyword.keyword.in_(found_keywords))

@@ -20,7 +20,6 @@ from .models import (
     SearchDocument,
     escape_like_literal,
 )
-from .namespace import get_namespace
 from .search_terms import build_document_search_terms, expand_query_terms
 
 if TYPE_CHECKING:
@@ -214,21 +213,20 @@ class SearchIndexer:
             )
 
     async def refresh_search_documents_for_node(
-        self, node_uuid: str, session: Optional[AsyncSession] = None
+        self, node_uuid: str, session: Optional[AsyncSession] = None, namespace: str = ""
     ) -> None:
-        """Rebuild derived search rows for one node in the current namespace."""
-        ns = get_namespace()
+        """Rebuild derived search rows for one node in the given namespace (defaults to current)."""
         async with self._optional_session(session) as session:
             documents = await self._build_search_documents_for_node(
-                session, node_uuid, namespace=ns
+                session, node_uuid, namespace=namespace
             )
             await self._delete_search_documents_for_node(
-                session, node_uuid, namespace=ns
+                session, node_uuid, namespace=namespace
             )
             await self._insert_search_documents(session, documents)
 
     async def get_node_uuids_for_prefix(
-        self, session: AsyncSession, domain: str, base_path: str
+        self, session: AsyncSession, domain: str, base_path: str, namespace: str = ""
     ) -> List[str]:
         """Collect unique node UUIDs for a path and all descendants."""
         safe = escape_like_literal(base_path)
@@ -236,7 +234,7 @@ class SearchIndexer:
             select(Edge.child_uuid)
             .select_from(Path)
             .join(Edge, Path.edge_id == Edge.id)
-            .where(Path.namespace == get_namespace())
+            .where(Path.namespace == namespace)
             .where(Path.domain == domain)
             .where(
                 or_(
@@ -275,15 +273,14 @@ class SearchIndexer:
     # -----------------------------------------------------------------
 
     async def search(
-        self, query: str, limit: int = 10, domain: Optional[str] = None
+        self, query: str, limit: int = 10, domain: Optional[str] = None, namespace: str = ""
     ) -> List[Dict[str, Any]]:
         """Search memories by path and content using the derived FTS index."""
         async with self._session() as session:
-            ns = get_namespace()
             candidate_limit = max(limit * 5, 50)
             params: Dict[str, Any] = {
                 "candidate_limit": candidate_limit,
-                "namespace": ns,
+                "namespace": namespace,
             }
             domain_clause = ""
             if domain is not None:
