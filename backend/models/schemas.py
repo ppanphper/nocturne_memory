@@ -24,6 +24,7 @@ class ChangeInfo(BaseModel):
 class PathChange(BaseModel):
     action: str  # "created", "deleted"
     uri: str
+    namespace: Optional[str] = None
 
 
 class GlossaryChange(BaseModel):
@@ -43,6 +44,7 @@ class UriDiff(BaseModel):
     path_changes: Optional[List[PathChange]] = None
     glossary_changes: Optional[List[GlossaryChange]] = None
     active_paths: Optional[List[str]] = None
+    path_namespaces: Optional[Dict[str, List[str]]] = None
     has_changes: bool
 
 
@@ -58,6 +60,7 @@ class ChangeGroup(BaseModel):
     top_level_table: str
     action: str = "modified"
     row_count: int
+    namespaces: Optional[List[str]] = None
 
 
 class GroupRollbackResponse(BaseModel):
