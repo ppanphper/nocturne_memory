@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
 import { ShieldCheck, Database, LayoutGrid, Sparkles, Layers, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -97,6 +97,9 @@ function NamespaceSelector() {
 }
 
 function Layout() {
+  const location = useLocation();
+  const isReviewPage = location.pathname.startsWith('/review');
+
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-200">
       {/* Top Navigation Bar */}
@@ -141,7 +144,7 @@ function Layout() {
           </NavLink>
         </nav>
 
-        <NamespaceSelector />
+        {!isReviewPage && <NamespaceSelector />}
       </div>
 
       {/* Main Area */}

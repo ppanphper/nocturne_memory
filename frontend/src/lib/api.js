@@ -14,7 +14,7 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`;
   }
   const ns = localStorage.getItem('selected_namespace');
-  if (ns) {
+  if (ns && !config.url.startsWith('/review')) {
     config.headers['X-Namespace'] = ns;
   }
   return config;
