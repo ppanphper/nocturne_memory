@@ -213,15 +213,15 @@ class SearchIndexer:
             )
 
     async def refresh_search_documents_for_node(
-        self, node_uuid: str, session: Optional[AsyncSession] = None, namespace: str = ""
+        self, node_uuid: str, session: Optional[AsyncSession] = None, namespace: str = "", refresh_all_namespaces: bool = False
     ) -> None:
         """Rebuild derived search rows for one node in the given namespace (defaults to current)."""
         async with self._optional_session(session) as session:
             documents = await self._build_search_documents_for_node(
-                session, node_uuid, namespace=namespace
+                session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
             )
             await self._delete_search_documents_for_node(
-                session, node_uuid, namespace=namespace
+                session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
             )
             await self._insert_search_documents(session, documents)
 

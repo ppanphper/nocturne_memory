@@ -18,7 +18,6 @@ from models import (
 from .utils import get_text_diff
 from db.snapshot import get_changeset_store, _make_row_key
 from db import get_graph_service, get_search_indexer, get_db_manager
-from db.namespace import get_namespace
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -390,7 +389,7 @@ async def list_groups():
                             namespaces.add(pref.get('namespace'))
         
         graph = get_graph_service()
-        paths_data = await graph.get_paths_for_node(node_uuid)
+        paths_data = await graph.get_paths_for_node(node_uuid, search_all_namespaces=True)
         for p in paths_data:
             if not display_uri:
                 display_uri = f"{p['domain']}://{p['path']}"
@@ -559,7 +558,7 @@ async def get_group_diff(node_uuid: str):
     node_is_deleted = (top_table == "nodes" and action == "deleted")
     if not node_is_deleted:
         graph = get_graph_service()
-        paths_data = await graph.get_paths_for_node(node_uuid)
+        paths_data = await graph.get_paths_for_node(node_uuid, search_all_namespaces=True)
         
         uri_to_ns = {}
         for p in paths_data:
@@ -727,6 +726,7 @@ async def rollback_group(node_uuid: str):
                         try:
                             # rollback_to_memory automatically deprecates the current memory
                             # and un-deprecates the old one
+                            # When admin does a rollback, it rebuilds FTS docs for ALL namespaces
                             await graph.rollback_to_memory(old_active_mem_id, session=session)
                             messages.append(f"Restored previous memory content ({old_active_mem_id}).")
                         except ValueError:

@@ -356,7 +356,7 @@ class GraphService:
         # Tier 3: whatever is available
         return paths[0]
 
-    async def get_all_paths(self, domain: Optional[str] = None, namespace: str = "") -> List[Dict[str, Any]]:
+    async def get_all_paths(self, domain: Optional[str] = None, namespace: str = "", search_all_namespaces: bool = False) -> List[Dict[str, Any]]:
         """
         Get all paths with their node/edge info.
         """
@@ -372,8 +372,10 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == namespace)
             )
+
+            if not search_all_namespaces:
+                stmt = stmt.where(Path.namespace == namespace)
 
             if domain is not None:
                 stmt = stmt.where(Path.domain == domain)
@@ -384,12 +386,13 @@ class GraphService:
             paths = []
             seen = set()
             for path_obj, edge, memory in result.all():
-                key = (path_obj.domain, path_obj.path)
+                key = (path_obj.namespace, path_obj.domain, path_obj.path)
                 if key in seen:
                     continue
                 seen.add(key)
                 paths.append(
                     {
+                        "namespace": path_obj.namespace,
                         "domain": path_obj.domain,
                         "path": path_obj.path,
                         "uri": f"{path_obj.domain}://{path_obj.path}",
@@ -1137,7 +1140,7 @@ class GraphService:
             if content is None:
                 session.add(path_obj)
 
-            await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
+            await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True)
 
             return {
                 "domain": domain,
@@ -1182,7 +1185,7 @@ class GraphService:
             )
 
             await self._search.refresh_search_documents_for_node(
-                target_memory.node_uuid, session=session, namespace=namespace
+                target_memory.node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True
             )
 
             return {
@@ -1452,13 +1455,13 @@ class GraphService:
     # Recent Memories
     # =========================================================================
 
-    async def get_recent_memories(self, limit: int = 10, namespace: str = "") -> List[Dict[str, Any]]:
+    async def get_recent_memories(self, limit: int = 10, namespace: str = "", search_all_namespaces: bool = False) -> List[Dict[str, Any]]:
         """
         Get the most recently created/updated non-deprecated memories
         that have at least one path.
         """
         async with self.session() as session:
-            result = await session.execute(
+            stmt = (
                 select(Memory, Edge, Path)
                 .select_from(Path)
                 .join(Edge, Path.edge_id == Edge.id)
@@ -1469,9 +1472,14 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == namespace)
-                .order_by(Memory.created_at.desc())
             )
+
+            if not search_all_namespaces:
+                stmt = stmt.where(Path.namespace == namespace)
+            
+            stmt = stmt.order_by(Memory.created_at.desc())
+            
+            result = await session.execute(stmt)
 
             seen = set()
             memories = []
@@ -1502,7 +1510,7 @@ class GraphService:
     # Deprecated Memory Operations (for human's review)
     # =========================================================================
 
-    async def get_memory_by_id(self, memory_id: int, namespace: str = "") -> Optional[Dict[str, Any]]:
+    async def get_memory_by_id(self, memory_id: int) -> Optional[Dict[str, Any]]:
         """
         Get a memory by its ID (including deprecated ones).
         """
@@ -1519,10 +1527,10 @@ class GraphService:
                     select(Path.domain, Path.path)
                     .select_from(Path)
                     .join(Edge, Path.edge_id == Edge.id)
-                    .where(Path.namespace == namespace)
                     .where(Edge.child_uuid == memory.node_uuid)
                 )
-                paths = [f"{r[0]}://{r[1]}" for r in paths_result.all()]
+                # Deduplicate paths since they might exist in multiple namespaces
+                paths = list({f"{r[0]}://{r[1]}" for r in paths_result.all()})
 
             return {
                 "memory_id": memory.id,

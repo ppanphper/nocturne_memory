@@ -13,6 +13,37 @@ from db.database import DatabaseManager
 from db.graph import GraphService
 from db.search import SearchIndexer
 from db.glossary import GlossaryService
+import inspect
+
+class NamespaceProxy:
+    """
+    A simple proxy that automatically injects `namespace=get_namespace()` 
+    into all method calls of the underlying service object, if the method supports it.
+    This avoids global monkeypatching and keeps the tests clean and readable.
+    """
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        attr = getattr(self._obj, name)
+        if not callable(attr):
+            return attr
+            
+        sig = inspect.signature(attr)
+        accepts_namespace = "namespace" in sig.parameters
+
+        if inspect.iscoroutinefunction(attr):
+            async def async_wrapper(*args, **kwargs):
+                if accepts_namespace and "namespace" not in kwargs:
+                    kwargs["namespace"] = get_namespace()
+                return await attr(*args, **kwargs)
+            return async_wrapper
+        else:
+            def sync_wrapper(*args, **kwargs):
+                if accepts_namespace and "namespace" not in kwargs:
+                    kwargs["namespace"] = get_namespace()
+                return attr(*args, **kwargs)
+            return sync_wrapper
 
 
 @pytest_asyncio.fixture
@@ -23,7 +54,7 @@ async def services():
     search = SearchIndexer(db)
     glossary = GlossaryService(db, search)
     graph = GraphService(db, search)
-    yield graph, search, glossary, db
+    yield NamespaceProxy(graph), NamespaceProxy(search), NamespaceProxy(glossary), db
     await db.close()
 
 
@@ -579,3 +610,51 @@ async def test_default_namespace_invisible_to_named_namespace(services):
 
     set_namespace("named_ns")
     assert (await graph.get_memory_by_path("shared", "core"))["content"] == "Named data"
+
+@pytest.mark.asyncio
+async def test_orphan_memories_isolation(services):
+    """Orphaned memories are NOT filtered by namespace, as it's a global admin tool."""
+    graph, *_ = services
+
+    # Create and update in ns_a
+    set_namespace("ns_a")
+    await graph.create_memory("", "v1 A", 0, title="orphan_test", domain="core")
+    await graph.update_memory("orphan_test", "v2 A", domain="core")
+    
+    # Create and update in ns_b
+    set_namespace("ns_b")
+    await graph.create_memory("", "v1 B", 0, title="orphan_test", domain="core")
+    await graph.update_memory("orphan_test", "v2 B", domain="core")
+
+    # In ns_a, we should see BOTH since it's global
+    set_namespace("ns_a")
+    orphans_a = await graph.get_all_orphan_memories()
+    assert len(orphans_a) == 2
+    contents_a = {o["content_snippet"] for o in orphans_a}
+    assert "v1 A" in contents_a
+    assert "v1 B" in contents_a
+
+    # In ns_b, we should also see BOTH
+    set_namespace("ns_b")
+    orphans_b = await graph.get_all_orphan_memories()
+    assert len(orphans_b) == 2
+    contents_b = {o["content_snippet"] for o in orphans_b}
+    assert "v1 A" in contents_b
+    assert "v1 B" in contents_b
+
+    # Completely orphan ns_b's memory by deleting the node (soft GC)
+    await graph.remove_path("orphan_test", domain="core")
+    orphans_b_after = await graph.get_all_orphan_memories()
+    
+    # Now the node has no paths. Both v1 B and v2 B are orphaned.
+    assert len(orphans_b_after) == 3
+    contents = {o["content_snippet"] for o in orphans_b_after}
+    assert "v1 B" in contents
+    assert "v2 B" in contents
+    assert "v1 A" in contents
+
+    # In ns_a, same visibility
+    set_namespace("ns_a")
+    orphans_a_after = await graph.get_all_orphan_memories()
+    assert len(orphans_a_after) == 3
+

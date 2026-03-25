@@ -65,7 +65,7 @@ class GlossaryService:
                 raise ValueError(f"Keyword '{keyword}' is already bound to this node")
 
             await self._search.refresh_search_documents_for_node(
-                node_uuid, session=session, namespace=namespace
+                node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True
             )
 
             row_after = serialize_row(entry)
@@ -107,7 +107,7 @@ class GlossaryService:
             )
 
             await self._search.refresh_search_documents_for_node(
-                node_uuid, session=session, namespace=namespace
+                node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True
             )
 
             return {
@@ -126,13 +126,14 @@ class GlossaryService:
             )
             return [row[0] for row in result.all()]
 
-    async def get_all_glossary(self, namespace: str = "") -> List[Dict[str, Any]]:
+    async def get_all_glossary(self, namespace: str = "", search_all_namespaces: bool = False) -> List[Dict[str, Any]]:
         """Get all glossary entries grouped by keyword, with node URIs."""
         async with self._session() as session:
-            result = await session.execute(
+            stmt = (
                 select(
                     GlossaryKeyword.keyword,
                     GlossaryKeyword.node_uuid,
+                    Path.namespace,
                     Path.domain,
                     Path.path,
                     Memory.content,
@@ -142,35 +143,46 @@ class GlossaryService:
                 .join(
                     Edge, Edge.child_uuid == Node.uuid
                 )
-                .join(
+            )
+
+            if not search_all_namespaces:
+                stmt = stmt.join(
                     Path,
                     and_(
                         Path.edge_id == Edge.id,
                         Path.namespace == namespace,
                     ),
                 )
-                .outerjoin(
-                    Memory,
-                    and_(
-                        Memory.node_uuid == Node.uuid,
-                        Memory.deprecated == False,
-                    ),
+            else:
+                stmt = stmt.join(
+                    Path,
+                    Path.edge_id == Edge.id,
                 )
-                .order_by(GlossaryKeyword.keyword, Path.domain, Path.path)
-            )
 
-            groups: Dict[str, Dict[str, Dict[str, str]]] = defaultdict(dict)
+            stmt = stmt.outerjoin(
+                Memory,
+                and_(
+                    Memory.node_uuid == Node.uuid,
+                    Memory.deprecated == False,
+                ),
+            ).order_by(GlossaryKeyword.keyword, Path.domain, Path.path)
 
-            for keyword, node_uuid, domain, path, content in result.all():
-                if node_uuid not in groups[keyword]:
+            result = await session.execute(stmt)
+
+            groups: Dict[str, Dict[tuple, Dict[str, Any]]] = defaultdict(dict)
+
+            for keyword, node_uuid, namespace, domain, path, content in result.all():
+                key = (node_uuid, namespace, domain, path)
+                if key not in groups[keyword]:
                     snippet = ""
                     if content:
                         snippet = content[:100].replace("\n", " ")
                         if len(content) > 100:
                             snippet += "..."
                     uri = f"{domain}://{path}" if domain is not None and path is not None else f"unlinked://{node_uuid}"
-                    groups[keyword][node_uuid] = {
+                    groups[keyword][key] = {
                         "node_uuid": node_uuid,
+                        "namespace": namespace,
                         "uri": uri,
                         "content_snippet": snippet,
                     }

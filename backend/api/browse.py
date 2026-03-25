@@ -89,12 +89,13 @@ async def get_node(
     
     if not path:
         # Check if there is an actual memory stored at the root path
-        memory = await graph.get_memory_by_path("", domain=domain)
+        memory = await graph.get_memory_by_path("", domain=domain, namespace=get_namespace())
         
         children_raw = await graph.get_children(
             ROOT_NODE_UUID,
             context_domain=domain,
             context_path=path,
+            namespace=get_namespace()
         )
         
         if memory:
@@ -116,7 +117,7 @@ async def get_node(
         breadcrumbs = [{"path": "", "label": "root"}]
     else:
         # Get the node itself
-        memory = await graph.get_memory_by_path(path, domain=domain)
+        memory = await graph.get_memory_by_path(path, domain=domain, namespace=get_namespace())
         
         if not memory:
             raise HTTPException(status_code=404, detail=f"Path not found: {domain}://{path}")
@@ -125,6 +126,7 @@ async def get_node(
             memory["node_uuid"],
             context_domain=domain,
             context_path=path,
+            namespace=get_namespace()
         )
         
         # Build breadcrumbs
@@ -180,7 +182,7 @@ async def get_node(
 
         # Get all glossary matches for the node content using Aho-Corasick
         if memory.get("content"):
-            matches_dict = await _glossary.find_glossary_in_content(memory["content"])
+            matches_dict = await _glossary.find_glossary_in_content(memory["content"], namespace=get_namespace())
             if matches_dict:
                 glossary_matches = [
                     {"keyword": kw, "nodes": nodes}
@@ -220,7 +222,7 @@ async def update_node(
     graph = get_graph_service()
     
     # Check exists
-    memory = await graph.get_memory_by_path(path, domain=domain)
+    memory = await graph.get_memory_by_path(path, domain=domain, namespace=get_namespace())
     if not memory:
         raise HTTPException(status_code=404, detail=f"Path not found: {domain}://{path}")
     
@@ -232,6 +234,7 @@ async def update_node(
             content=body.content,
             priority=body.priority,
             disclosure=body.disclosure,
+            namespace=get_namespace(),
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -248,7 +251,7 @@ async def update_node(
 async def get_glossary():
     """Get all glossary keywords with their associated nodes."""
     glossary = get_glossary_service()
-    raw_entries = await glossary.get_all_glossary()
+    raw_entries = await glossary.get_all_glossary(namespace=get_namespace(), search_all_namespaces=False)
     
     return {"glossary": raw_entries}
 
@@ -260,7 +263,7 @@ async def add_glossary_keyword(body: GlossaryAdd):
     # The review queue tracks AI-authored mutations only.
     glossary = get_glossary_service()
     try:
-        result = await glossary.add_glossary_keyword(body.keyword, body.node_uuid)
+        result = await glossary.add_glossary_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
         return {"success": True, **result}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -272,7 +275,7 @@ async def remove_glossary_keyword(body: GlossaryRemove):
     # Human-facing direct edit endpoint: intentionally bypasses changeset/review.
     # The review queue tracks AI-authored mutations only.
     glossary = get_glossary_service()
-    result = await glossary.remove_glossary_keyword(body.keyword, body.node_uuid)
+    result = await glossary.remove_glossary_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
     if not result.get("success"):
         raise HTTPException(status_code=404, detail="Keyword binding not found")
     return {"success": True}
