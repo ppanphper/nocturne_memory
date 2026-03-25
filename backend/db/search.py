@@ -90,12 +90,12 @@ class SearchIndexer:
     # -----------------------------------------------------------------
 
     async def _build_search_documents_for_node(
-        self, session: AsyncSession, node_uuid: str, *, namespace: Optional[str] = None
+        self, session: AsyncSession, node_uuid: str, *, namespace: str = "", search_all_namespaces: bool = False
     ) -> List[Dict[str, Any]]:
         """Materialize search rows for every reachable path of a node.
 
-        When *namespace* is given, only builds docs for paths in that namespace.
-        Pass ``None`` to build for ALL namespaces (used by full rebuild).
+        When search_all_namespaces is True, builds for ALL namespaces.
+        Otherwise only builds docs for paths in the specified namespace.
         """
         memory = (
             await session.execute(
@@ -113,7 +113,7 @@ class SearchIndexer:
             .join(Edge, Path.edge_id == Edge.id)
             .where(Edge.child_uuid == node_uuid)
         )
-        if namespace is not None:
+        if not search_all_namespaces:
             path_stmt = path_stmt.where(Path.namespace == namespace)
         path_stmt = path_stmt.order_by(Path.domain, Path.path)
         path_rows = (await session.execute(path_stmt)).all()
@@ -153,14 +153,14 @@ class SearchIndexer:
         return documents
 
     async def _delete_search_documents_for_node(
-        self, session: AsyncSession, node_uuid: str, *, namespace: Optional[str] = None
+        self, session: AsyncSession, node_uuid: str, *, namespace: str = "", search_all_namespaces: bool = False
     ) -> None:
         """Remove derived search rows for a node.
 
-        When *namespace* is given, only removes docs in that namespace.
-        Pass ``None`` to remove ALL namespaces (used by full rebuild).
+        When search_all_namespaces is True, removes ALL namespaces.
+        Otherwise only removes docs in the specified namespace.
         """
-        if namespace is not None:
+        if not search_all_namespaces:
             if self.db_type == "sqlite":
                 await session.execute(
                     text(
@@ -264,7 +264,7 @@ class SearchIndexer:
             )
             for (node_uuid,) in result.all():
                 documents = await self._build_search_documents_for_node(
-                    session, node_uuid, namespace=None
+                    session, node_uuid, search_all_namespaces=True
                 )
                 await self._insert_search_documents(session, documents)
 

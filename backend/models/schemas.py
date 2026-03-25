@@ -24,7 +24,7 @@ class ChangeInfo(BaseModel):
 class PathChange(BaseModel):
     action: str  # "created", "deleted"
     uri: str
-    namespace: Optional[str] = None
+    namespace: str = ""
 
 
 class GlossaryChange(BaseModel):

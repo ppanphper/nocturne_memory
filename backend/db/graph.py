@@ -38,7 +38,6 @@ from .models import (
     serialize_row,
     serialize_memory_ref,
 )
-from .namespace import get_namespace
 
 if TYPE_CHECKING:
     from .database import DatabaseManager
@@ -142,7 +141,8 @@ class GraphService:
     async def get_paths_for_node(
         self,
         node_uuid: str,
-        namespace: Optional[str] = None,
+        namespace: str = "",
+        search_all_namespaces: bool = False,
         session: Optional[AsyncSession] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -151,7 +151,7 @@ class GraphService:
         Args:
             node_uuid: The node UUID to query.
             namespace: If provided, filters to paths in this namespace. 
-                       If None, returns paths across all namespaces.
+            search_all_namespaces: If True, returns paths across all namespaces.
             session: Optional existing AsyncSession to use.
                        
         Returns:
@@ -164,7 +164,7 @@ class GraphService:
                 .join(Edge, Path.edge_id == Edge.id)
                 .where(Edge.child_uuid == node_uuid)
             )
-            if namespace is not None:
+            if not search_all_namespaces:
                 stmt = stmt.where(Path.namespace == namespace)
 
             result = await db_session.execute(stmt)
@@ -189,7 +189,8 @@ class GraphService:
     async def get_memory_by_node_uuid(
         self, 
         node_uuid: str, 
-        namespace: Optional[str] = None,
+        namespace: str = "",
+        search_all_namespaces: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Get the current active (non-deprecated) memory for a node.
@@ -197,7 +198,7 @@ class GraphService:
         Args:
             node_uuid: The node UUID to query.
             namespace: If provided, filters the returned paths to this namespace. 
-                       If None, returns paths across all namespaces.
+            search_all_namespaces: If True, returns paths across all namespaces.
         """
         async with self.session() as session:
             result = await session.execute(
@@ -211,7 +212,9 @@ class GraphService:
             if not memory:
                 return None
 
-            paths_data = await self.get_paths_for_node(node_uuid, namespace=namespace, session=session)
+            paths_data = await self.get_paths_for_node(
+                node_uuid, namespace=namespace, search_all_namespaces=search_all_namespaces, session=session
+            )
             paths = [p["uri"] for p in paths_data]
 
             return {
@@ -502,15 +505,16 @@ class GraphService:
         session: AsyncSession,
         node_uuid: str,
         *,
-        namespace: Optional[str] = None,
+        namespace: str = "",
+        search_all_namespaces: bool = False,
         exclude_domain: Optional[str] = None,
         exclude_path_prefix: Optional[str] = None,
         exclude_namespace: Optional[str] = None,
     ) -> int:
         """Count paths whose edge points TO this node (edge.child_uuid).
 
-        When *namespace* is given, only counts paths in that namespace.
-        GC callers should omit it to count across ALL namespaces.
+        When search_all_namespaces is True, counts across ALL namespaces (GC callers use this).
+        Otherwise only counts paths in the specified namespace.
         """
         stmt = (
             select(func.count())
@@ -519,7 +523,7 @@ class GraphService:
             .where(Edge.child_uuid == node_uuid)
         )
 
-        if namespace is not None:
+        if not search_all_namespaces:
             stmt = stmt.where(Path.namespace == namespace)
 
         if exclude_domain and exclude_path_prefix:
@@ -909,7 +913,7 @@ class GraphService:
 
         Memories are kept (marked deprecated) so they can be recovered.
         """
-        if await self._count_incoming_paths(session, node_uuid) > 0:
+        if await self._count_incoming_paths(session, node_uuid, search_all_namespaces=True) > 0:
             return
 
         # Incoming edges are pathless by definition; delete them.
@@ -1328,6 +1332,7 @@ class GraphService:
                 surviving_count = await self._count_incoming_paths(
                     session,
                     child_edge.child_uuid,
+                    search_all_namespaces=True,
                     exclude_domain=domain,
                     exclude_path_prefix=path,
                     exclude_namespace=namespace,
