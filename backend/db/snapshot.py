@@ -31,10 +31,6 @@ def _default_snapshot_dir() -> str:
     return str(app_root / "snapshots")
 
 
-DEFAULT_SNAPSHOT_DIR = _default_snapshot_dir()
-
-_CHANGESET_FILENAME = "changeset.json"
-
 TABLE_ORDER = ["nodes", "memories", "edges", "paths", "glossary_keywords"]
 TABLE_PKS = {
     "nodes": "uuid",
