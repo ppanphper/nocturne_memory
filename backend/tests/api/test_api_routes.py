@@ -73,6 +73,70 @@ async def test_review_group_diff_and_rollback(api_client, graph_service, mcp_mod
     assert current["content"] == "Original review content"
 
 
+async def test_review_rollback_restores_path_even_if_node_is_live_in_other_namespace(
+    api_client, graph_service, mcp_module
+):
+    from sqlalchemy import select
+
+    from db import get_db_manager
+    from db.models import Path
+    created = await graph_service.create_memory(
+        parent_path="",
+        content="Shared across namespaces",
+        priority=2,
+        title="shared_review_item",
+        disclosure="When reviewing shared node rollback",
+        namespace="ns_a",
+    )
+
+    db = get_db_manager()
+    async with db.session() as session:
+        path_row = (
+            await session.execute(
+                select(Path).where(
+                    Path.namespace == "ns_a",
+                    Path.domain == "core",
+                    Path.path == "shared_review_item",
+                )
+            )
+        ).scalar_one()
+        session.add(
+            Path(
+                namespace="ns_b",
+                domain="core",
+                path="shared_review_item",
+                edge_id=path_row.edge_id,
+            )
+        )
+
+    from db.namespace import set_namespace
+
+    set_namespace("ns_a")
+    deleted = await mcp_module.delete_memory("core://shared_review_item")
+    assert "Success" in deleted
+
+    groups = await api_client.get("/review/groups")
+    group = next(
+        g for g in groups.json() if g["node_uuid"] == created["node_uuid"]
+    )
+
+    rollback = await api_client.post(f"/review/groups/{group['node_uuid']}/rollback")
+    assert rollback.status_code == 200
+    assert rollback.json()["success"] is True
+
+    restored = await graph_service.get_memory_by_path(
+        "shared_review_item", "core", namespace="ns_a"
+    )
+    still_live_elsewhere = await graph_service.get_memory_by_path(
+        "shared_review_item", "core", namespace="ns_b"
+    )
+
+    assert restored is not None
+    assert restored["node_uuid"] == created["node_uuid"]
+    assert still_live_elsewhere is not None
+    assert still_live_elsewhere["node_uuid"] == created["node_uuid"]
+
+
 async def test_review_diff_includes_path_and_glossary_changes(api_client, graph_service, mcp_module):
     await graph_service.create_memory(
         parent_path="",

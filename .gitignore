@@ -1,4 +1,5 @@
 .env
+.claude
 backend/README.md
 nocturne_memory.db
 migration_log.json

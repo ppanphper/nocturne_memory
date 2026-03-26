@@ -740,7 +740,8 @@ async def rollback_group(node_uuid: str):
                             await session.execute(
                                 delete(GlossaryKeyword).where(
                                     GlossaryKeyword.keyword == r["after"]["keyword"],
-                                    GlossaryKeyword.node_uuid == r["after"]["node_uuid"]
+                                    GlossaryKeyword.node_uuid == r["after"]["node_uuid"],
+                                    GlossaryKeyword.namespace == r["after"].get("namespace", "")
                                 )
                             )
                             messages.append(f"Reverted glossary keyword addition ('{r['after']['keyword']}').")
@@ -761,7 +762,8 @@ async def rollback_group(node_uuid: str):
                             existing = (await session.execute(
                                 select(GlossaryKeyword).where(
                                     GlossaryKeyword.keyword == b["keyword"],
-                                    GlossaryKeyword.node_uuid == b["node_uuid"]
+                                    GlossaryKeyword.node_uuid == b["node_uuid"],
+                                    GlossaryKeyword.namespace == b.get("namespace", "")
                                 )
                             )).scalar_one_or_none()
                             
@@ -769,6 +771,7 @@ async def rollback_group(node_uuid: str):
                                 entry = GlossaryKeyword(
                                     keyword=b["keyword"],
                                     node_uuid=b["node_uuid"],
+                                    namespace=b.get("namespace", "")
                                 )
                                 session.add(entry)
                                 messages.append(f"Restored glossary keyword ('{b['keyword']}').")

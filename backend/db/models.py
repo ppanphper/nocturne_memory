@@ -176,10 +176,11 @@ class GlossaryKeyword(Base):
         ForeignKey("nodes.uuid", ondelete="CASCADE"),
         nullable=False,
     )
+    namespace = Column(String(64), nullable=False, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint("keyword", "node_uuid", name="uq_glossary_keyword_node"),
+        UniqueConstraint("keyword", "node_uuid", "namespace", name="uq_glossary_keyword_node"),
     )
 
     node = relationship("Node")

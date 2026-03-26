@@ -89,6 +89,9 @@ function NamespaceSelector() {
           {knownNamespaces.map(ns => (
             <option key={ns} value={ns}>{ns}</option>
           ))}
+          {selected && !knownNamespaces.includes(selected) && (
+            <option key={selected} value={selected}>{selected}</option>
+          )}
           <option value="__custom__">+ enter custom…</option>
         </select>
       )}

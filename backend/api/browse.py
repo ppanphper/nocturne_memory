@@ -178,7 +178,7 @@ async def get_node(
     if not nav_only:
         _glossary = get_glossary_service()
         if node_uuid and node_uuid != ROOT_NODE_UUID:
-            glossary_keywords = await _glossary.get_glossary_for_node(node_uuid)
+            glossary_keywords = await _glossary.get_glossary_for_node(node_uuid, namespace=get_namespace())
 
         # Get all glossary matches for the node content using Aho-Corasick
         if memory.get("content"):

@@ -245,7 +245,7 @@ async def _fetch_and_format_memory(uri: str) -> str:
     else:
         lines.append("Disclosure: (not set)")
 
-    node_keywords = await glossary.get_glossary_for_node(memory["node_uuid"])
+    node_keywords = await glossary.get_glossary_for_node(memory["node_uuid"], namespace=get_namespace())
     if node_keywords:
         lines.append(f"Keywords: [{', '.join(node_keywords)}]")
     else:
@@ -1084,7 +1084,7 @@ async def manage_triggers(
             from db.snapshot import get_changeset_store
             get_changeset_store().record_many(before_state, after_state)
 
-        current = await glossary.get_glossary_for_node(node_uuid)
+        current = await glossary.get_glossary_for_node(node_uuid, namespace=get_namespace())
 
         lines = [f"Keywords for '{full_uri}':"]
         if added:

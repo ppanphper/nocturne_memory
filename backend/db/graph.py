@@ -268,8 +268,12 @@ class GraphService:
             approx_children_count_map: Dict[str, int] = {}
             if child_uuids:
                 count_result = await session.execute(
-                    select(Edge.parent_uuid, func.count(Edge.id))
-                    .where(Edge.parent_uuid.in_(child_uuids))
+                    select(Edge.parent_uuid, func.count(Edge.id.distinct()))
+                    .join(Path, Path.edge_id == Edge.id)
+                    .where(
+                        Edge.parent_uuid.in_(child_uuids),
+                        Path.namespace == namespace,
+                    )
                     .group_by(Edge.parent_uuid)
                 )
                 approx_children_count_map = {
@@ -1389,6 +1393,11 @@ class GraphService:
 
         Creates/finds the edge from the parent to the target node,
         creates the path entry, and ensures the node has an active memory.
+
+        Rollback may need to restore a deleted path for a node that still has
+        surviving paths in other namespaces. That is allowed here because this
+        method reconstructs a previously existing mapping; it is not creating a
+        new cross-namespace association from scratch.
         """
         if path == "":
             raise ValueError("Cannot restore the root path.")
