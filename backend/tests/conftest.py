@@ -65,7 +65,7 @@ async def isolated_test_environment(tmp_path, monkeypatch):
 
     import db.snapshot as snapshot_module
 
-    snapshot_module._store = snapshot_module.ChangesetStore(snapshot_dir=str(snapshot_dir))
+    snapshot_module._store = None
 
     await _reset_database(db_url)
 

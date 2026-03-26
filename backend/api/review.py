@@ -18,12 +18,6 @@ from models import (
 from .utils import get_text_diff
 from db.snapshot import get_changeset_store, _make_row_key
 from db import get_graph_service, get_search_indexer, get_db_manager
-from db.namespace import get_namespace
-
-
-def _get_ns_store():
-    """Return the ChangesetStore for the current request's namespace."""
-    return get_changeset_store(get_namespace())
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -117,7 +111,8 @@ def _get_causal_anchors(changed_rows: List[Dict[str, Any]], all_rows: List[Dict[
         # 将 paths 按照 URI 字符串索引起来，方便查它的父级 path
         if row["table"] == "paths":
             ref = row["before"] if row["before"] else row["after"]
-            paths_by_string[f"{ref['domain']}://{ref['path']}"] = row
+            ns = ref.get("namespace", "")
+            paths_by_string[f"{ns}::{ref['domain']}://{ref['path']}"] = row
             
         # 将 edges 按照它指向的 child_uuid 索引起来，找“谁连向了我”
         elif row["table"] == "edges":
@@ -161,7 +156,8 @@ def _get_causal_anchors(changed_rows: List[Dict[str, Any]], all_rows: List[Dict[
 
             if "/" in ref["path"]:
                 parent_path = ref["path"].rsplit("/", 1)[0]
-                parent_uri = f"{ref['domain']}://{parent_path}"
+                ns = ref.get("namespace", "")
+                parent_uri = f"{ns}::{ref['domain']}://{parent_path}"
                 parent_row = paths_by_string.get(parent_uri)
                 if parent_row and same_action(row, parent_row):
                     pref = parent_row["before"] if parent_row["before"] else parent_row["after"]
@@ -283,6 +279,80 @@ def _get_causal_anchors(changed_rows: List[Dict[str, Any]], all_rows: List[Dict[
     return final_anchors
 
 
+TABLE_RANK = {"nodes": 5, "memories": 4, "edges": 3, "paths": 2, "glossary_keywords": 1}
+RANK_TO_TABLE = {v: k for k, v in TABLE_RANK.items()}
+
+
+def _determine_top_table_and_action(rows: List[Dict[str, Any]]):
+    tables_present = {r["table"] for r in rows}
+    top_rank = max((TABLE_RANK[t] for t in tables_present), default=1)
+    top_table = RANK_TO_TABLE[top_rank]
+    top_table_rows = [r for r in rows if r["table"] == top_table]
+    action = "modified"
+    if all(r["before"] is None and r["after"] is not None for r in top_table_rows):
+        action = "created"
+    elif all(r["before"] is not None and r["after"] is None for r in top_table_rows):
+        action = "deleted"
+    return top_table, action
+
+
+class _ReviewContext:
+    __slots__ = ("store", "all_rows", "changed_rows", "anchors", "db_edge_to_node")
+
+    def __init__(self, store, all_rows, changed_rows, anchors, db_edge_to_node):
+        self.store = store
+        self.all_rows = all_rows
+        self.changed_rows = changed_rows
+        self.anchors = anchors
+        self.db_edge_to_node = db_edge_to_node
+
+    def rows_for_node(self, node_uuid: str) -> List[Dict[str, Any]]:
+        rows = []
+        for row in self.changed_rows:
+            key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
+            if self.anchors.get(key) == node_uuid:
+                rows.append(row)
+        return rows
+
+    def keys_for_node(self, node_uuid: str) -> List[str]:
+        keys = []
+        for row in self.all_rows:
+            key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
+            if self.anchors.get(key) == node_uuid:
+                keys.append(key)
+            elif row not in self.changed_rows and _resolve_node_uuid_sync(row, self.all_rows, self.db_edge_to_node) == node_uuid:
+                keys.append(key)
+        return keys
+
+
+async def _build_review_context() -> _ReviewContext:
+    store = get_changeset_store()
+    all_rows_dict, changed_rows = store.get_snapshot_view()
+    all_rows = list(all_rows_dict.values())
+
+    edge_ids_to_resolve = set()
+    for row in changed_rows:
+        if row["table"] == "paths":
+            ref = row["before"] if row["before"] else row["after"]
+            if ref and ref.get("edge_id"):
+                edge_ids_to_resolve.add(ref["edge_id"])
+
+    db_edge_to_node = {}
+    if edge_ids_to_resolve:
+        db = get_db_manager()
+        from sqlalchemy import select
+        from db.models import Edge
+        async with db.session() as session:
+            res = await session.execute(
+                select(Edge.id, Edge.child_uuid).where(Edge.id.in_(edge_ids_to_resolve))
+            )
+            for eid, child_uuid in res:
+                db_edge_to_node[eid] = child_uuid
+
+    anchors = _get_causal_anchors(changed_rows, all_rows, db_edge_to_node)
+    return _ReviewContext(store, all_rows, changed_rows, anchors, db_edge_to_node)
+
+
 @router.get("/groups", response_model=List[ChangeGroup])
 async def list_groups():
     """
@@ -292,102 +362,54 @@ async def list_groups():
     It dynamically groups rows, resolves URIs for display, and determines 
     the highest-level table affected (node > memory > edge > path).
     """
-    store = _get_ns_store()
-    all_rows_dict = store.get_all_rows_dict()
-    all_rows = list(all_rows_dict.values())
-    changed_rows = store.get_changed_rows()
-    
-    # Extract edge_ids from path rows that we need to resolve via live DB
-    # (i.e. edges that weren't modified in this changeset but their paths were)
-    edge_ids_to_resolve = set()
-    for row in changed_rows:
-        if row["table"] == "paths":
-            ref = row["before"] if row["before"] else row["after"]
-            if ref and ref.get("edge_id"):
-                found = False
-                for r in all_rows:
-                    if r["table"] == "edges":
-                        eref = r["before"] if r["before"] else r["after"]
-                        if eref and eref.get("id") == ref["edge_id"]:
-                            found = True
-                            break
-                if not found:
-                    edge_ids_to_resolve.add(ref["edge_id"])
-                    
-    # Bulk-resolve missing edge_ids to child_uuids via live DB
-    db_edge_to_node = {}
-    if edge_ids_to_resolve:
-        db = get_db_manager()
-        from sqlalchemy import select
-        from db.models import Edge
-        async with db.session() as session:
-            res = await session.execute(select(Edge.id, Edge.child_uuid).where(Edge.id.in_(edge_ids_to_resolve)))
-            for eid, child_uuid in res:
-                db_edge_to_node[eid] = child_uuid
-                
-    # Group all changed rows by their causal root node_uuid
-    anchors = _get_causal_anchors(changed_rows, all_rows, db_edge_to_node)
+    ctx = await _build_review_context()
+
     groups: Dict[str, List[Dict]] = {}
-    for row in changed_rows:
+    for row in ctx.changed_rows:
         key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
-        node_uuid = anchors.get(key)
+        node_uuid = ctx.anchors.get(key)
         if node_uuid:
             groups.setdefault(node_uuid, []).append(row)
             
     result = []
-    # Rank tables to determine the most significant change for UI icon display
-    TABLE_RANK = {"nodes": 5, "memories": 4, "edges": 3, "paths": 2, "glossary_keywords": 1}
-    RANK_TO_TABLE = {5: "nodes", 4: "memories", 3: "edges", 2: "paths", 1: "glossary_keywords"}
-    
     for node_uuid, rows in groups.items():
-        tables_present = {r["table"] for r in rows}
-        top_rank = max((TABLE_RANK[t] for t in tables_present), default=1)
-        top_table = RANK_TO_TABLE[top_rank]
-        
-        top_table_rows = [r for r in rows if r["table"] == top_table]
-        action = "modified"
-        if all(r["before"] is None and r["after"] is not None for r in top_table_rows):
-            action = "created"
-        elif all(r["before"] is not None and r["after"] is None for r in top_table_rows):
-            action = "deleted"
+        top_table, action = _determine_top_table_and_action(rows)
         
         display_uri = None
-        # Attempt to find a display URI from path rows in the changeset (even unchanged ones)
-        for r in all_rows:
+        namespaces = set()
+        
+        for r in ctx.all_rows:
             if r["table"] == "paths":
-                if _resolve_node_uuid_sync(r, all_rows, db_edge_to_node) == node_uuid:
+                if _resolve_node_uuid_sync(r, ctx.all_rows, ctx.db_edge_to_node) == node_uuid:
                     pref = r["before"] if r["before"] else r["after"]
                     if pref:
-                        display_uri = f"{pref.get('domain', 'core')}://{pref.get('path', '')}"
-                        break
+                        if not display_uri:
+                            display_uri = f"{pref.get('domain', 'core')}://{pref.get('path', '')}"
+                        if pref.get('namespace') is not None:
+                            namespaces.add(pref.get('namespace'))
         
-        # If no path is in the changeset, find the primary URI from the live DB
-        if not display_uri:
-            db = get_db_manager()
-            from sqlalchemy import select
-            from db.models import Path as PathModel, Edge
-            async with db.session() as session:
-                db_res = await session.execute(
-                    select(PathModel.domain, PathModel.path)
-                    .join(Edge, PathModel.edge_id == Edge.id)
-                    .where(PathModel.namespace == get_namespace())
-                    .where(Edge.child_uuid == node_uuid)
-                    .limit(1)
-                )
-                db_row = db_res.first()
-                if db_row:
-                    display_uri = f"{db_row[0]}://{db_row[1]}"
+        graph = get_graph_service()
+        paths_data = await graph.get_paths_for_node(node_uuid, search_all_namespaces=True)
+        for p in paths_data:
+            if not display_uri:
+                display_uri = f"{p['domain']}://{p['path']}"
+            if p['namespace'] is not None:
+                namespaces.add(p['namespace'])
                     
-        # Ultimate fallback for orphan nodes
         if not display_uri:
             display_uri = f"[unmapped]/{node_uuid}"
+            
+        final_namespaces = None
+        if namespaces:
+            final_namespaces = sorted(list(namespaces))
             
         result.append(ChangeGroup(
             node_uuid=node_uuid,
             display_uri=display_uri,
             top_level_table=top_table,
             action=action,
-            row_count=len(rows)
+            row_count=len(rows),
+            namespaces=final_namespaces
         ))
         
     return sorted(result, key=lambda x: x.display_uri)
@@ -490,72 +512,33 @@ async def get_group_diff(node_uuid: str):
     
     Used by the review UI to highlight content modifications or metadata changes.
     """
-    store = _get_ns_store()
-    all_rows_dict = store.get_all_rows_dict()
-    all_rows = list(all_rows_dict.values())
-    changed_rows = store.get_changed_rows()
-    
-    # Re-run the edge_id resolution cache for this request
-    db_edge_to_node = {}
+    ctx = await _build_review_context()
     db = get_db_manager()
     from sqlalchemy import select
     from db.models import Edge
-    
-    edge_ids_to_resolve = set()
-    for row in changed_rows:
-        if row["table"] == "paths":
-            ref = row["before"] if row["before"] else row["after"]
-            if ref and ref.get("edge_id"):
-                edge_ids_to_resolve.add(ref["edge_id"])
-    
-    if edge_ids_to_resolve:
-        async with db.session() as session:
-            res = await session.execute(select(Edge.id, Edge.child_uuid).where(Edge.id.in_(edge_ids_to_resolve)))
-            for eid, child_uuid in res:
-                db_edge_to_node[eid] = child_uuid
 
-    anchors = _get_causal_anchors(changed_rows, all_rows, db_edge_to_node)
-
-    # Filter all rows belonging to this node_uuid
-    rows = []
-    for row in changed_rows:
-        key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
-        if anchors.get(key) == node_uuid:
-            rows.append(row)
-            
+    rows = ctx.rows_for_node(node_uuid)
     if not rows:
         raise HTTPException(404, f"No changes for node '{node_uuid}'")
 
-    # Determine highest table rank to power the UI badge (e.g. "nodes changed")
-    tables_present = {r["table"] for r in rows}
-    TABLE_RANK = {"nodes": 5, "memories": 4, "edges": 3, "paths": 2, "glossary_keywords": 1}
-    RANK_TO_TABLE = {5: "nodes", 4: "memories", 3: "edges", 2: "paths", 1: "glossary_keywords"}
-    top_rank = max((TABLE_RANK[t] for t in tables_present), default=1)
-    top_table = RANK_TO_TABLE[top_rank]
+    top_table, action = _determine_top_table_and_action(rows)
 
-    top_table_rows = [r for r in rows if r["table"] == top_table]
-    action = "modified"
-    if all(r["before"] is None and r["after"] is not None for r in top_table_rows):
-        action = "created"
-    elif all(r["before"] is not None and r["after"] is None for r in top_table_rows):
-        action = "deleted"
-
-    # Extract path changes
     path_changes = []
     for r in rows:
         if r["table"] == "paths":
             if r["before"] is None and r["after"] is not None:
                 path_changes.append({
                     "action": "created",
-                    "uri": f"{r['after']['domain']}://{r['after']['path']}"
+                    "uri": f"{r['after']['domain']}://{r['after']['path']}",
+                    "namespace": r["after"].get("namespace", "")
                 })
             elif r["before"] is not None and r["after"] is None:
                 path_changes.append({
                     "action": "deleted",
-                    "uri": f"{r['before']['domain']}://{r['before']['path']}"
+                    "uri": f"{r['before']['domain']}://{r['before']['path']}",
+                    "namespace": r["before"].get("namespace", "")
                 })
                 
-    # Extract glossary changes
     glossary_changes = []
     for r in rows:
         if r["table"] == "glossary_keywords":
@@ -570,22 +553,25 @@ async def get_group_diff(node_uuid: str):
                     "keyword": r["before"]["keyword"]
                 })
                 
-    # If the node was not deleted, fetch its current active paths from the live DB
     active_paths = []
+    path_namespaces = {}
     node_is_deleted = (top_table == "nodes" and action == "deleted")
     if not node_is_deleted:
-        from db.models import Path as PathModel
-        async with db.session() as session:
-            db_res = await session.execute(
-                select(PathModel.domain, PathModel.path)
-                .join(Edge, PathModel.edge_id == Edge.id)
-                .where(PathModel.namespace == get_namespace())
-                .where(Edge.child_uuid == node_uuid)
-            )
-            for db_row in db_res:
-                active_paths.append(f"{db_row[0]}://{db_row[1]}")
+        graph = get_graph_service()
+        paths_data = await graph.get_paths_for_node(node_uuid, search_all_namespaces=True)
+        
+        uri_to_ns = {}
+        for p in paths_data:
+            uri_str = f"{p['domain']}://{p['path']}"
+            ns = p['namespace'] or ""
+            if uri_str not in uri_to_ns:
+                uri_to_ns[uri_str] = set()
+            uri_to_ns[uri_str].add(ns)
+                
+        for uri_str, ns_set in uri_to_ns.items():
+            active_paths.append(uri_str)
+            path_namespaces[uri_str] = sorted(list(ns_set))
 
-    # Extract text content and metadata for diff viewer
     before_content, before_meta = await _extract_content_and_meta_for_node(rows, "before", node_uuid)
     current_content, current_meta = await _extract_content_and_meta_for_node(rows, "after", node_uuid)
     
@@ -622,6 +608,7 @@ async def get_group_diff(node_uuid: str):
         path_changes=path_changes if path_changes else None,
         glossary_changes=glossary_changes if glossary_changes else None,
         active_paths=active_paths if active_paths else None,
+        path_namespaces=path_namespaces if path_namespaces else None,
         has_changes=has_changes,
     )
 
@@ -639,43 +626,14 @@ async def rollback_group(node_uuid: str):
     
     Finally, purges all related rows from the snapshot changeset.
     """
-    store = _get_ns_store()
-    all_rows_dict = store.get_all_rows_dict()
-    all_rows = list(all_rows_dict.values())
-    changed_rows = store.get_changed_rows()
-    
-    db_edge_to_node = {}
+    ctx = await _build_review_context()
     db = get_db_manager()
     graph = get_graph_service()
     search = get_search_indexer()
     from sqlalchemy import select, update, delete
     from db.models import Edge, GlossaryKeyword, Node
-    
-    # Resolve edge_ids for path tracing
-    edge_ids_to_resolve = set()
-    for row in changed_rows:
-        if row["table"] == "paths":
-            ref = row["before"] if row["before"] else row["after"]
-            if ref and ref.get("edge_id"):
-                edge_ids_to_resolve.add(ref["edge_id"])
-    
-    if edge_ids_to_resolve:
-        async with db.session() as session:
-            res = await session.execute(select(Edge.id, Edge.child_uuid).where(Edge.id.in_(edge_ids_to_resolve)))
-            for eid, child_uuid in res:
-                db_edge_to_node[eid] = child_uuid
 
-    anchors = _get_causal_anchors(changed_rows, all_rows, db_edge_to_node)
-
-    # Gather rows for this node
-    rows = []
-    keys_to_remove = []
-    for row in changed_rows:
-        key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
-        if anchors.get(key) == node_uuid:
-            rows.append(row)
-            keys_to_remove.append(key)
-
+    rows = ctx.rows_for_node(node_uuid)
     if not rows:
         raise HTTPException(404, f"No changes for '{node_uuid}'")
 
@@ -701,7 +659,7 @@ async def rollback_group(node_uuid: str):
                 # 2a. Remove created paths
                 for r in path_creations:
                     try:
-                        await graph.remove_path(r["after"]["path"], r["after"]["domain"], session=session)
+                        await graph.remove_path(r["after"]["path"], r["after"]["domain"], session=session, namespace=r["after"].get("namespace"))
                         messages.append(f"Removed path '{r['after']['path']}'.")
                     except ValueError as e:
                         if "not found" not in str(e):
@@ -741,7 +699,8 @@ async def rollback_group(node_uuid: str):
                         parent_uuid=parent_uuid,
                         priority=priority,
                         disclosure=disclosure,
-                        session=session
+                        session=session,
+                        namespace=r["before"].get("namespace")
                     )
                     messages.append(f"Restored path '{r['before']['path']}'.")
 
@@ -767,6 +726,7 @@ async def rollback_group(node_uuid: str):
                         try:
                             # rollback_to_memory automatically deprecates the current memory
                             # and un-deprecates the old one
+                            # When admin does a rollback, it rebuilds FTS docs for ALL namespaces
                             await graph.rollback_to_memory(old_active_mem_id, session=session)
                             messages.append(f"Restored previous memory content ({old_active_mem_id}).")
                         except ValueError:
@@ -820,17 +780,7 @@ async def rollback_group(node_uuid: str):
         if not messages:
             messages.append("No rollback action required.")
 
-        # 6. Clean up the changeset store
-        # Includes changed rows AND net-zero/unchanged rows that were linked to this group
-        for row in all_rows:
-            key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
-            if key not in keys_to_remove: # Not already removed
-                if anchors.get(key) == node_uuid:
-                    keys_to_remove.append(key)
-                elif row not in changed_rows and _resolve_node_uuid_sync(row, all_rows, db_edge_to_node) == node_uuid:
-                    keys_to_remove.append(key)
-
-        store.remove_keys(keys_to_remove)
+        ctx.store.remove_keys(ctx.keys_for_node(node_uuid))
 
         return GroupRollbackResponse(node_uuid=node_uuid, success=True, message=" ".join(messages))
     except Exception as e:
@@ -845,40 +795,9 @@ async def approve_group(node_uuid: str):
     This does not touch the DB; it simply clears the tracked rows from the
     changeset JSON, indicating the human has reviewed and accepted them.
     """
-    store = _get_ns_store()
-    all_rows_dict = store.get_all_rows_dict()
-    all_rows = list(all_rows_dict.values())
-    changed_rows = store.get_changed_rows()
-    
-    db_edge_to_node = {}
-    db = get_db_manager()
-    from sqlalchemy import select
-    from db.models import Edge
-    
-    edge_ids_to_resolve = set()
-    for row in changed_rows:
-        if row["table"] == "paths":
-            ref = row["before"] if row["before"] else row["after"]
-            if ref and ref.get("edge_id"):
-                edge_ids_to_resolve.add(ref["edge_id"])
-    
-    if edge_ids_to_resolve:
-        async with db.session() as session:
-            res = await session.execute(select(Edge.id, Edge.child_uuid).where(Edge.id.in_(edge_ids_to_resolve)))
-            for eid, child_uuid in res:
-                db_edge_to_node[eid] = child_uuid
-
-    anchors = _get_causal_anchors(changed_rows, all_rows, db_edge_to_node)
-
-    keys_to_remove = []
-    for row in all_rows:
-        key = _make_row_key(row["table"], row["before"] if row["before"] else row["after"])
-        if anchors.get(key) == node_uuid:
-            keys_to_remove.append(key)
-        elif row not in changed_rows and _resolve_node_uuid_sync(row, all_rows, db_edge_to_node) == node_uuid:
-            keys_to_remove.append(key)
-
-    count = store.remove_keys(keys_to_remove)
+    ctx = await _build_review_context()
+    keys = ctx.keys_for_node(node_uuid)
+    count = ctx.store.remove_keys(keys)
     if count == 0:
         raise HTTPException(404, f"No changes for '{node_uuid}'")
     return {"message": f"Approved node '{node_uuid}' ({count} rows cleared)"}
@@ -887,7 +806,7 @@ async def approve_group(node_uuid: str):
 @router.delete("")
 async def clear_all():
     """Approve/Integrate all pending changes globally by emptying the changeset."""
-    store = _get_ns_store()
+    store = get_changeset_store()
     count = store.clear_all()
     if count == 0:
         raise HTTPException(404, "No pending changes")

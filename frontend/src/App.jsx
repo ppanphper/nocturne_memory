@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { ShieldCheck, Database, LayoutGrid, Sparkles, Layers } from 'lucide-react';
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
+import { ShieldCheck, Database, LayoutGrid, Sparkles, Layers, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 import ReviewPage from './features/review/ReviewPage';
@@ -97,6 +97,9 @@ function NamespaceSelector() {
 }
 
 function Layout() {
+  const location = useLocation();
+  const isReviewPage = location.pathname.startsWith('/review');
+
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-200">
       {/* Top Navigation Bar */}
@@ -141,7 +144,7 @@ function Layout() {
           </NavLink>
         </nav>
 
-        <NamespaceSelector />
+        {!isReviewPage && <NamespaceSelector />}
       </div>
 
       {/* Main Area */}
@@ -165,6 +168,7 @@ function App() {
     return !!localStorage.getItem('api_token');
   });
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [backendError, setBackendError] = useState(false);
 
   const handleAuthError = useCallback(() => {
     setIsAuthenticated(false);
@@ -172,27 +176,33 @@ function App() {
 
   const handleAuthenticated = useCallback(() => {
     setIsAuthenticated(true);
+    setBackendError(false);
   }, []);
 
-  // 组件挂载时，如果当前未认证，尝试发送一个无 token 的请求探测后端是否开启了鉴权
+  // 组件挂载时，尝试发送一个无 token 的请求探测后端是否连通及鉴权状态
   useEffect(() => {
     let mounted = true;
 
     const checkAuthStatus = async () => {
-      if (isAuthenticated) {
-        if (mounted) setIsCheckingAuth(false);
-        return;
-      }
-
       try {
         const { getDomains } = await import('./lib/api');
         await getDomains();
         if (mounted) {
           setIsAuthenticated(true);
+          setBackendError(false);
           setIsCheckingAuth(false);
         }
       } catch (error) {
         if (mounted) {
+          if (!error.response) {
+            // 没有响应，说明是网络错误（后端未启动）
+            setBackendError(true);
+          } else if (error.response.status === 401) {
+            setIsAuthenticated(false);
+            setBackendError(false);
+          } else {
+            setBackendError(false);
+          }
           setIsCheckingAuth(false);
         }
       }
@@ -203,7 +213,7 @@ function App() {
     return () => {
       mounted = false;
     };
-  }, [isAuthenticated]);
+  }, []);
 
   // 监听 401 事件，切换回认证界面
   useEffect(() => {
@@ -218,6 +228,24 @@ function App() {
       <div className="flex flex-col items-center justify-center h-screen bg-slate-950 text-slate-400">
         <div className="w-8 h-8 rounded-full border-2 border-indigo-500/30 border-t-indigo-500 animate-spin mb-4"></div>
         <div className="text-sm">Connecting to Memory Core...</div>
+      </div>
+    );
+  }
+
+  if (backendError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-slate-950 text-slate-400">
+        <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
+          <AlertCircle className="w-6 h-6 text-red-500" />
+        </div>
+        <div className="text-lg font-bold text-slate-100 mb-1">后端未连接</div>
+        <div className="text-sm text-slate-500">请检查后端服务是否已启动</div>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-6 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm transition-colors"
+        >
+          重试
+        </button>
       </div>
     );
   }

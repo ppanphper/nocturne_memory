@@ -38,7 +38,6 @@ from .models import (
     serialize_row,
     serialize_memory_ref,
 )
-from .namespace import get_namespace
 
 if TYPE_CHECKING:
     from .database import DatabaseManager
@@ -72,7 +71,7 @@ class GraphService:
     # =========================================================================
 
     async def get_memory_by_path(
-        self, path: str, domain: str = "core"
+        self, path: str, domain: str = "core", namespace: str = ""
     ) -> Optional[Dict[str, Any]]:
         """
         Get a memory by its path.
@@ -96,7 +95,6 @@ class GraphService:
             }
 
         async with self.session() as session:
-            ns = get_namespace()
             result = await session.execute(
                 select(Memory, Edge, Path)
                 .select_from(Path)
@@ -108,7 +106,7 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == ns)
+                .where(Path.namespace == namespace)
                 .where(Path.domain == domain)
                 .where(Path.path == path)
                 .order_by(Memory.created_at.desc())
@@ -122,7 +120,7 @@ class GraphService:
             memory, edge, path_obj = row
 
             # Count total paths (aliases) for this node within namespace
-            total_paths = await self._count_incoming_paths(session, edge.child_uuid, namespace=ns)
+            total_paths = await self._count_incoming_paths(session, edge.child_uuid, namespace=namespace)
             alias_count = max(0, total_paths - 1)
 
             return {
@@ -140,8 +138,68 @@ class GraphService:
                 "alias_count": alias_count,
             }
 
-    async def get_memory_by_node_uuid(self, node_uuid: str) -> Optional[Dict[str, Any]]:
-        """Get the current active (non-deprecated) memory for a node."""
+    async def get_paths_for_node(
+        self,
+        node_uuid: str,
+        namespace: str = "",
+        search_all_namespaces: bool = False,
+        session: Optional[AsyncSession] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all paths pointing to a specific node.
+        
+        Args:
+            node_uuid: The node UUID to query.
+            namespace: If provided, filters to paths in this namespace. 
+            search_all_namespaces: If True, returns paths across all namespaces.
+            session: Optional existing AsyncSession to use.
+                       
+        Returns:
+            A list of dicts, each containing 'domain', 'path', 'namespace', and 'uri'.
+        """
+        async def _query(db_session: AsyncSession):
+            stmt = (
+                select(Path.domain, Path.path, Path.namespace)
+                .select_from(Path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .where(Edge.child_uuid == node_uuid)
+            )
+            if not search_all_namespaces:
+                stmt = stmt.where(Path.namespace == namespace)
+
+            result = await db_session.execute(stmt)
+            paths = []
+            for r in result.all():
+                domain, path_str, ns = r[0], r[1], r[2]
+                uri = f"{domain}://{path_str}"
+                paths.append({
+                    "domain": domain,
+                    "path": path_str,
+                    "namespace": ns,
+                    "uri": uri
+                })
+            return paths
+
+        if session:
+            return await _query(session)
+        else:
+            async with self.session() as new_session:
+                return await _query(new_session)
+
+    async def get_memory_by_node_uuid(
+        self, 
+        node_uuid: str, 
+        namespace: str = "",
+        search_all_namespaces: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the current active (non-deprecated) memory for a node.
+        
+        Args:
+            node_uuid: The node UUID to query.
+            namespace: If provided, filters the returned paths to this namespace. 
+            search_all_namespaces: If True, returns paths across all namespaces.
+        """
         async with self.session() as session:
             result = await session.execute(
                 select(Memory)
@@ -154,15 +212,10 @@ class GraphService:
             if not memory:
                 return None
 
-            ns = get_namespace()
-            paths_result = await session.execute(
-                select(Path.domain, Path.path)
-                .select_from(Path)
-                .join(Edge, Path.edge_id == Edge.id)
-                .where(Path.namespace == ns)
-                .where(Edge.child_uuid == node_uuid)
+            paths_data = await self.get_paths_for_node(
+                node_uuid, namespace=namespace, search_all_namespaces=search_all_namespaces, session=session
             )
-            paths = [f"{r[0]}://{r[1]}" for r in paths_result.all()]
+            paths = [p["uri"] for p in paths_data]
 
             return {
                 "id": memory.id,
@@ -180,6 +233,7 @@ class GraphService:
         node_uuid: str = ROOT_NODE_UUID,
         context_domain: Optional[str] = None,
         context_path: Optional[str] = None,
+        namespace: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Get direct children of a node via the edges table.
@@ -222,7 +276,6 @@ class GraphService:
                     parent_uuid: count for parent_uuid, count in count_result.all()
                 }
 
-            ns = get_namespace()
             children = []
             seen = set()
             for edge, memory in rows:
@@ -232,7 +285,7 @@ class GraphService:
 
                 path_result = await session.execute(
                     select(Path).where(
-                        Path.namespace == ns,
+                        Path.namespace == namespace,
                         Path.edge_id == edge.id,
                     )
                 )
@@ -303,12 +356,11 @@ class GraphService:
         # Tier 3: whatever is available
         return paths[0]
 
-    async def get_all_paths(self, domain: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def get_all_paths(self, domain: Optional[str] = None, namespace: str = "", search_all_namespaces: bool = False) -> List[Dict[str, Any]]:
         """
         Get all paths with their node/edge info.
         """
         async with self.session() as session:
-            ns = get_namespace()
             stmt = (
                 select(Path, Edge, Memory)
                 .select_from(Path)
@@ -320,8 +372,10 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == ns)
             )
+
+            if not search_all_namespaces:
+                stmt = stmt.where(Path.namespace == namespace)
 
             if domain is not None:
                 stmt = stmt.where(Path.domain == domain)
@@ -332,12 +386,13 @@ class GraphService:
             paths = []
             seen = set()
             for path_obj, edge, memory in result.all():
-                key = (path_obj.domain, path_obj.path)
+                key = (path_obj.namespace, path_obj.domain, path_obj.path)
                 if key in seen:
                     continue
                 seen.add(key)
                 paths.append(
                     {
+                        "namespace": path_obj.namespace,
                         "domain": path_obj.domain,
                         "path": path_obj.path,
                         "uri": f"{path_obj.domain}://{path_obj.path}",
@@ -419,21 +474,21 @@ class GraphService:
         return edge, True
 
     async def _insert_path(
-        self, session: AsyncSession, domain: str, path: str, edge_id: int
+        self, session: AsyncSession, domain: str, path: str, edge_id: int, namespace: str = ""
     ) -> Path:
-        """Insert a new path row with the current namespace."""
-        path_obj = Path(namespace=get_namespace(), domain=domain, path=path, edge_id=edge_id)
+        """Insert a new path row with the given namespace."""
+        path_obj = Path(namespace=namespace, domain=domain, path=path, edge_id=edge_id)
         session.add(path_obj)
         return path_obj
 
     async def _resolve_path(
-        self, session: AsyncSession, path: str, domain: str = "core"
+        self, session: AsyncSession, path: str, domain: str = "core", namespace: str = ""
     ) -> Optional[tuple[Path, Edge, str]]:
         """Resolve domain+path to (Path, Edge, node_uuid). Returns None if not found."""
         result = await session.execute(
             select(Path, Edge)
             .join(Edge, Path.edge_id == Edge.id)
-            .where(Path.namespace == get_namespace(), Path.domain == domain, Path.path == path)
+            .where(Path.namespace == namespace, Path.domain == domain, Path.path == path)
         )
         row = result.first()
         if not row:
@@ -453,14 +508,16 @@ class GraphService:
         session: AsyncSession,
         node_uuid: str,
         *,
-        namespace: Optional[str] = None,
+        namespace: str = "",
+        search_all_namespaces: bool = False,
         exclude_domain: Optional[str] = None,
         exclude_path_prefix: Optional[str] = None,
+        exclude_namespace: Optional[str] = None,
     ) -> int:
         """Count paths whose edge points TO this node (edge.child_uuid).
 
-        When *namespace* is given, only counts paths in that namespace.
-        GC callers should omit it to count across ALL namespaces.
+        When search_all_namespaces is True, counts across ALL namespaces (GC callers use this).
+        Otherwise only counts paths in the specified namespace.
         """
         stmt = (
             select(func.count())
@@ -469,19 +526,19 @@ class GraphService:
             .where(Edge.child_uuid == node_uuid)
         )
 
-        if namespace is not None:
+        if not search_all_namespaces:
             stmt = stmt.where(Path.namespace == namespace)
 
         if exclude_domain and exclude_path_prefix:
             safe_prefix = escape_like_literal(exclude_path_prefix)
-            stmt = stmt.where(
-                not_(
-                    and_(
-                        Path.domain == exclude_domain,
-                        Path.path.like(f"{safe_prefix}/%", escape="\\"),
-                    )
-                )
+            exclude_cond = and_(
+                Path.domain == exclude_domain,
+                Path.path.like(f"{safe_prefix}/%", escape="\\"),
             )
+            if exclude_namespace is not None:
+                exclude_cond = and_(exclude_cond, Path.namespace == exclude_namespace)
+            
+            stmt = stmt.where(not_(exclude_cond))
 
         result = await session.execute(stmt)
         return result.scalar()
@@ -632,12 +689,13 @@ class GraphService:
         session: AsyncSession,
         domain: str,
         base_path: str,
+        namespace: str = "",
     ) -> List[Dict[str, Any]]:
         """Return serialized path rows for base_path and all descendants."""
         safe = escape_like_literal(base_path)
         result = await session.execute(
             select(Path).where(
-                Path.namespace == get_namespace(),
+                Path.namespace == namespace,
                 Path.domain == domain,
                 or_(
                     Path.path == base_path,
@@ -654,6 +712,7 @@ class GraphService:
         domain: str,
         base_path: str,
         _visited: Optional[set] = None,
+        namespace: str = "",
     ):
         """Recursively create path entries for all descendants of a node."""
         if _visited is None:
@@ -661,7 +720,6 @@ class GraphService:
         if node_uuid in _visited:
             return
         _visited.add(node_uuid)
-        ns = get_namespace()
         try:
             result = await session.execute(
                 select(Edge).where(Edge.parent_uuid == node_uuid)
@@ -673,17 +731,17 @@ class GraphService:
 
                 existing = await session.execute(
                     select(Path)
-                    .where(Path.namespace == ns)
+                    .where(Path.namespace == namespace)
                     .where(Path.domain == domain)
                     .where(Path.path == child_path)
                 )
                 if not existing.scalar_one_or_none():
                     session.add(
-                        Path(namespace=ns, domain=domain, path=child_path, edge_id=child_edge.id)
+                        Path(namespace=namespace, domain=domain, path=child_path, edge_id=child_edge.id)
                     )
 
                 await self._cascade_create_paths(
-                    session, child_edge.child_uuid, domain, child_path, _visited
+                    session, child_edge.child_uuid, domain, child_path, _visited, namespace
                 )
         finally:
             _visited.remove(node_uuid)
@@ -699,15 +757,14 @@ class GraphService:
         domain: str,
         path: str,
         *,
-        namespace: Optional[str] = None,
+        namespace: str = "",
         collector: Optional[ChangeCollector] = None,
     ) -> None:
         """Delete a path and all its descendant paths in the given domain/namespace."""
-        ns = namespace if namespace is not None else get_namespace()
         safe = escape_like_literal(path)
         result = await session.execute(
             select(Path)
-            .where(Path.namespace == ns)
+            .where(Path.namespace == namespace)
             .where(Path.domain == domain)
             .where(
                 or_(
@@ -804,13 +861,14 @@ class GraphService:
         path: str,
         priority: int = 0,
         disclosure: Optional[str] = None,
+        namespace: str = "",
     ) -> Dict[str, Any]:
         """Create (or get) an edge, its path entry, and cascade sub-paths."""
         edge, edge_created = await self._get_or_create_edge(
             session, parent_uuid, child_uuid, name, priority, disclosure
         )
-        path_obj = await self._insert_path(session, domain, path, edge.id)
-        await self._cascade_create_paths(session, child_uuid, domain, path)
+        path_obj = await self._insert_path(session, domain, path, edge.id, namespace)
+        await self._cascade_create_paths(session, child_uuid, domain, path, _visited=None, namespace=namespace)
         return {
             "edge": edge,
             "edge_id": edge.id,
@@ -858,7 +916,7 @@ class GraphService:
 
         Memories are kept (marked deprecated) so they can be recovered.
         """
-        if await self._count_incoming_paths(session, node_uuid) > 0:
+        if await self._count_incoming_paths(session, node_uuid, search_all_namespaces=True) > 0:
             return
 
         # Incoming edges are pathless by definition; delete them.
@@ -911,6 +969,7 @@ class GraphService:
         title: Optional[str] = None,
         disclosure: Optional[str] = None,
         domain: str = "core",
+        namespace: str = "",
     ) -> Dict[str, Any]:
         """
         Create a new memory under a parent path.
@@ -921,7 +980,7 @@ class GraphService:
             if not parent_path:
                 parent_uuid = ROOT_NODE_UUID
             else:
-                parent = await self._resolve_path(session, parent_path, domain)
+                parent = await self._resolve_path(session, parent_path, domain, namespace=namespace)
                 if not parent:
                     raise ValueError(
                         f"Parent '{domain}://{parent_path}' does not exist. "
@@ -939,7 +998,7 @@ class GraphService:
 
             existing = await session.execute(
                 select(Path).where(
-                    Path.namespace == get_namespace(),
+                    Path.namespace == namespace,
                     Path.domain == domain,
                     Path.path == final_path,
                 )
@@ -961,9 +1020,10 @@ class GraphService:
                 final_path,
                 priority,
                 disclosure,
+                namespace,
             )
 
-            await self._search.refresh_search_documents_for_node(new_uuid, session=session)
+            await self._search.refresh_search_documents_for_node(new_uuid, session=session, namespace=namespace)
 
             return {
                 "id": memory.id,
@@ -987,6 +1047,7 @@ class GraphService:
         priority: Optional[int] = None,
         disclosure: Optional[str] = None,
         domain: str = "core",
+        namespace: str = "",
     ) -> Dict[str, Any]:
         """
         Update a memory.
@@ -1015,7 +1076,7 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == get_namespace())
+                .where(Path.namespace == namespace)
                 .where(Path.domain == domain, Path.path == path)
                 .order_by(Memory.created_at.desc())
                 .limit(1)
@@ -1079,7 +1140,7 @@ class GraphService:
             if content is None:
                 session.add(path_obj)
 
-            await self._search.refresh_search_documents_for_node(node_uuid, session=session)
+            await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True)
 
             return {
                 "domain": domain,
@@ -1093,7 +1154,7 @@ class GraphService:
             }
 
     async def rollback_to_memory(
-        self, target_memory_id: int, session: Optional[AsyncSession] = None
+        self, target_memory_id: int, session: Optional[AsyncSession] = None, namespace: str = ""
     ) -> Dict[str, Any]:
         """Inverse of _deprecate_node_memories: restore a deprecated memory
         as the active version, deprecating whatever is currently active."""
@@ -1124,7 +1185,7 @@ class GraphService:
             )
 
             await self._search.refresh_search_documents_for_node(
-                target_memory.node_uuid, session=session
+                target_memory.node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True
             )
 
             return {
@@ -1140,6 +1201,7 @@ class GraphService:
         target_domain: str = "core",
         priority: int = 0,
         disclosure: Optional[str] = None,
+        namespace: str = "",
     ) -> Dict[str, Any]:
         """
         Create an alias path pointing to the same node as target_path.
@@ -1150,7 +1212,7 @@ class GraphService:
             raise ValueError("Cannot create an alias at the root path.")
 
         async with self.session() as session:
-            target = await self._resolve_path(session, target_path, target_domain)
+            target = await self._resolve_path(session, target_path, target_domain, namespace=namespace)
             if not target:
                 raise ValueError(
                     f"Target path '{target_domain}://{target_path}' not found"
@@ -1159,7 +1221,7 @@ class GraphService:
 
             if "/" in new_path:
                 parent_path = new_path.rsplit("/", 1)[0]
-                parent = await self._resolve_path(session, parent_path, new_domain)
+                parent = await self._resolve_path(session, parent_path, new_domain, namespace=namespace)
                 if not parent:
                     raise ValueError(
                         f"Parent '{new_domain}://{parent_path}' does not exist. "
@@ -1171,7 +1233,7 @@ class GraphService:
 
             existing = await session.execute(
                 select(Path).where(
-                    Path.namespace == get_namespace(),
+                    Path.namespace == namespace,
                     Path.domain == new_domain,
                     Path.path == new_path,
                 )
@@ -1182,7 +1244,7 @@ class GraphService:
             # Snapshot existing rows under this prefix so rows_after only
             # contains rows actually created by this call.
             before_subtree = await self._get_subtree_path_rows(
-                session, new_domain, new_path
+                session, new_domain, new_path, namespace=namespace
             )
             before_path_keys = {(row["domain"], row["path"]) for row in before_subtree}
 
@@ -1202,11 +1264,12 @@ class GraphService:
                 new_path,
                 priority,
                 disclosure,
+                namespace,
             )
             await session.flush()
 
             after_subtree = await self._get_subtree_path_rows(
-                session, new_domain, new_path
+                session, new_domain, new_path, namespace=namespace
             )
             created_paths = [
                 row
@@ -1220,9 +1283,9 @@ class GraphService:
             if result["edge_created"]:
                 rows_after["edges"] = [serialize_row(result["edge"])]
 
-            affected_nodes = await self._search.get_node_uuids_for_prefix(session, new_domain, new_path)
+            affected_nodes = await self._search.get_node_uuids_for_prefix(session, new_domain, new_path, namespace=namespace)
             for node_uuid in affected_nodes:
-                await self._search.refresh_search_documents_for_node(node_uuid, session=session)
+                await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
 
             return {
                 "new_uri": f"{new_domain}://{new_path}",
@@ -1234,7 +1297,7 @@ class GraphService:
             }
 
     async def remove_path(
-        self, path: str, domain: str = "core", session: Optional[AsyncSession] = None
+        self, path: str, domain: str = "core", session: Optional[AsyncSession] = None, namespace: str = ""
     ) -> Dict[str, Any]:
         """
         Remove a path and its sub-paths with orphan prevention.
@@ -1256,7 +1319,7 @@ class GraphService:
             raise ValueError("Cannot remove the root path.")
 
         async with self._optional_session(session) as session:
-            target = await self._resolve_path(session, path, domain)
+            target = await self._resolve_path(session, path, domain, namespace=namespace)
             if not target:
                 raise ValueError(f"Path '{domain}://{path}' not found")
             _, target_edge, target_node_uuid = target
@@ -1272,8 +1335,10 @@ class GraphService:
                 surviving_count = await self._count_incoming_paths(
                     session,
                     child_edge.child_uuid,
+                    search_all_namespaces=True,
                     exclude_domain=domain,
                     exclude_path_prefix=path,
+                    exclude_namespace=namespace,
                 )
                 if surviving_count == 0:
                     would_orphan.append(child_edge)
@@ -1291,8 +1356,8 @@ class GraphService:
                 )
 
             collector = ChangeCollector()
-            affected_nodes = await self._search.get_node_uuids_for_prefix(session, domain, path)
-            await self._delete_subtree_paths(session, domain, path, collector=collector)
+            affected_nodes = await self._search.get_node_uuids_for_prefix(session, domain, path, namespace=namespace)
+            await self._delete_subtree_paths(session, domain, path, namespace=namespace, collector=collector)
             await session.flush()
 
             # GC: edge + node cleanup (collector records deleted edges/memories)
@@ -1301,7 +1366,7 @@ class GraphService:
             await self._gc_node_soft(session, target_node_uuid, collector=collector)
 
             for node_uuid in affected_nodes:
-                await self._search.refresh_search_documents_for_node(node_uuid, session=session)
+                await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
 
             return {
                 "rows_before": collector.to_dict(),
@@ -1317,6 +1382,7 @@ class GraphService:
         priority: int = 0,
         disclosure: Optional[str] = None,
         session: Optional[AsyncSession] = None,
+        namespace: str = "",
     ) -> Dict[str, Any]:
         """
         Restore a path pointing to a node (used for rollback of delete).
@@ -1357,7 +1423,7 @@ class GraphService:
 
             existing = await session.execute(
                 select(Path).where(
-                    Path.namespace == get_namespace(),
+                    Path.namespace == namespace,
                     Path.domain == domain,
                     Path.path == path,
                 )
@@ -1368,7 +1434,7 @@ class GraphService:
             if parent_uuid is None:
                 if "/" in path:
                     parent_path_str = path.rsplit("/", 1)[0]
-                    parent = await self._resolve_path(session, parent_path_str, domain)
+                    parent = await self._resolve_path(session, parent_path_str, domain, namespace=namespace)
                     if parent:
                         _, _, parent_uuid = parent
                     else:
@@ -1380,8 +1446,8 @@ class GraphService:
             edge, _ = await self._get_or_create_edge(
                 session, parent_uuid, node_uuid, edge_name, priority, disclosure
             )
-            await self._insert_path(session, domain, path, edge.id)
-            await self._search.refresh_search_documents_for_node(node_uuid, session=session)
+            await self._insert_path(session, domain, path, edge.id, namespace=namespace)
+            await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
 
             return {"uri": f"{domain}://{path}", "node_uuid": node_uuid}
 
@@ -1389,13 +1455,13 @@ class GraphService:
     # Recent Memories
     # =========================================================================
 
-    async def get_recent_memories(self, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_recent_memories(self, limit: int = 10, namespace: str = "", search_all_namespaces: bool = False) -> List[Dict[str, Any]]:
         """
         Get the most recently created/updated non-deprecated memories
         that have at least one path.
         """
         async with self.session() as session:
-            result = await session.execute(
+            stmt = (
                 select(Memory, Edge, Path)
                 .select_from(Path)
                 .join(Edge, Path.edge_id == Edge.id)
@@ -1406,9 +1472,14 @@ class GraphService:
                         Memory.deprecated == False,
                     ),
                 )
-                .where(Path.namespace == get_namespace())
-                .order_by(Memory.created_at.desc())
             )
+
+            if not search_all_namespaces:
+                stmt = stmt.where(Path.namespace == namespace)
+            
+            stmt = stmt.order_by(Memory.created_at.desc())
+            
+            result = await session.execute(stmt)
 
             seen = set()
             memories = []
@@ -1456,10 +1527,10 @@ class GraphService:
                     select(Path.domain, Path.path)
                     .select_from(Path)
                     .join(Edge, Path.edge_id == Edge.id)
-                    .where(Path.namespace == get_namespace())
                     .where(Edge.child_uuid == memory.node_uuid)
                 )
-                paths = [f"{r[0]}://{r[1]}" for r in paths_result.all()]
+                # Deduplicate paths since they might exist in multiple namespaces
+                paths = list({f"{r[0]}://{r[1]}" for r in paths_result.all()})
 
             return {
                 "memory_id": memory.id,
@@ -1515,10 +1586,10 @@ class GraphService:
                         select(Path.domain, Path.path)
                         .select_from(Path)
                         .join(Edge, Path.edge_id == Edge.id)
-                        .where(Path.namespace == get_namespace())
                         .where(Edge.child_uuid == memory.node_uuid)
                     )
-                    paths = [f"{r[0]}://{r[1]}" for r in paths_result.all()]
+                    # Deduplicate paths since they might exist in multiple namespaces
+                    paths = list({f"{r[0]}://{r[1]}" for r in paths_result.all()})
                 return {
                     "id": memory.id,
                     "content": memory.content,
@@ -1637,6 +1708,11 @@ class GraphService:
         other delete flows.
         """
         async with self.session() as session:
+            mem_result = await session.execute(select(Memory).where(Memory.id == memory_id))
+            mem = mem_result.scalar_one_or_none()
+            if not mem:
+                raise ValueError(f"Memory {memory_id} not found")
+
             delete_result = await self._safely_delete_memory(
                 session,
                 memory_id,
@@ -1667,4 +1743,3 @@ class GraphService:
             response["rows_after"] = {}
 
             return response
-

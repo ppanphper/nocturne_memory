@@ -193,7 +193,10 @@ function ReviewPage() {
             <div className="w-8 h-8 rounded bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-purple-900/20">
               <ShieldCheck className="w-4 h-4 text-white" />
             </div>
-            <span className="font-bold tracking-tight text-sm">Review Protocol</span>
+            <div className="flex flex-col">
+              <span className="font-bold tracking-tight text-sm">Global Review</span>
+              <span className="text-[10px] text-indigo-400/70 uppercase tracking-widest font-medium">All Namespaces</span>
+            </div>
           </div>
         </div>
 
@@ -240,8 +243,13 @@ function ReviewPage() {
                   {changeTypeIcon(selectedChange.top_level_table)}
                 </div>
                 <div className="min-w-0 flex flex-col">
-                  <h2 className="text-lg font-medium text-slate-100 truncate tracking-tight">
-                    {selectedChange.display_uri}
+                  <h2 className="text-lg font-medium text-slate-100 truncate tracking-tight flex items-center gap-3">
+                    <span>{selectedChange.display_uri}</span>
+                    {selectedChange.namespaces && selectedChange.namespaces.length > 0 && selectedChange.namespaces.some(ns => ns !== "" || selectedChange.namespaces.length > 1) && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 tracking-widest font-mono uppercase">
+                        {selectedChange.namespaces.map(ns => ns === "" ? "default" : ns).join(', ')}
+                      </span>
+                    )}
                   </h2>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
                     <span className="bg-slate-800/50 px-1.5 py-0.5 rounded text-slate-400 capitalize">
@@ -325,6 +333,11 @@ function ReviewPage() {
                               <span className={clsx("font-mono text-xs break-all", pc.action === 'deleted' ? "text-rose-400/70 line-through" : "text-emerald-400")}>
                                 {pc.uri}
                               </span>
+                              {pc.namespace !== undefined && pc.namespace !== null && (pc.namespace !== "" || (selectedChange.namespaces && selectedChange.namespaces.some(n => n !== "" || selectedChange.namespaces.length > 1))) && (
+                                <span className="ml-auto text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 tracking-wider font-mono">
+                                  {pc.namespace === "" ? "default" : pc.namespace}
+                                </span>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -332,9 +345,16 @@ function ReviewPage() {
                           <div className="mt-4 pt-4 border-t border-slate-800/50">
                             <span className="text-xs text-slate-500 block mb-2">Node remains accessible at:</span>
                             <div className="flex flex-wrap gap-2">
-                              {diffData.active_paths.map((p, i) => (
-                                <span key={i} className="text-xs font-mono text-indigo-300 bg-indigo-900/10 border border-indigo-500/20 px-2 py-1 rounded">
-                                  {p}
+                              {diffData.active_paths.map((uri, i) => (
+                                <span key={i} className="flex items-center gap-2 text-xs font-mono text-indigo-300 bg-indigo-900/10 border border-indigo-500/20 px-2 py-1 rounded">
+                                  <span>{uri}</span>
+                                  {diffData.path_namespaces && diffData.path_namespaces[uri] && diffData.path_namespaces[uri]
+                                    .filter(ns => ns !== "" || diffData.path_namespaces[uri].length > 1 || (selectedChange.namespaces && selectedChange.namespaces.some(n => n !== "" || selectedChange.namespaces.length > 1)))
+                                    .map((ns, nsIdx) => (
+                                    <span key={nsIdx} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                      {ns === "" ? "default" : ns}
+                                    </span>
+                                  ))}
                                 </span>
                               ))}
                             </div>

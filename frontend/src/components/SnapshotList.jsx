@@ -36,6 +36,12 @@ const COLOR_CLASSES = {
 };
 
 const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
+  const getNamespacesLabel = (namespaces) => {
+    if (!namespaces || namespaces.length === 0) return null;
+    if (namespaces.length === 1 && namespaces[0] === "") return null;
+    return namespaces.map(ns => ns === "" ? "default" : ns).join(", ");
+  };
+
   if (snapshots.length === 0) {
     return (
       <div className="text-center py-10 text-slate-600 text-xs tracking-wide uppercase">
@@ -75,10 +81,15 @@ const SnapshotList = ({ snapshots, selectedId, onSelect }) => {
 
               <div className="min-w-0 flex-1">
                 <div className={clsx(
-                  "font-medium text-xs truncate transition-colors",
+                  "font-medium text-xs truncate transition-colors flex items-center gap-2",
                   isSelected ? "text-slate-200" : "text-slate-400 group-hover:text-slate-300"
                 )}>
-                  {item.display_uri}
+                  <span className="truncate">{item.display_uri}</span>
+                  {getNamespacesLabel(item.namespaces) && (
+                    <span className="flex-shrink-0 text-[9px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 tracking-wider font-mono">
+                      {getNamespacesLabel(item.namespaces)}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-0.5 flex justify-between items-center pr-2">
                   <span className={clsx(
