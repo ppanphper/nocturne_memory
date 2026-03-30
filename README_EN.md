@@ -166,7 +166,7 @@ Memories are organized like a file system, yet interconnected like a neural netw
 *   `system://boot` → **Boot sequence (auto-loads core identity on every wake-up)**
 
 <details>
-<summary><strong>Expand: Deep Dive into the Data Model (Graph Backend + Tree Frontend)</strong></summary>
+<summary><strong>🧬 Expand: Deep Dive into the Data Model (Graph Backend + Tree Frontend)</strong></summary>
 
 ### 🧬 Graph Backend, Tree Frontend
 
@@ -310,7 +310,7 @@ claude mcp list
 > When you see `nocturne-memory` with a `Connected` status, the configuration is successful.
 
 <details>
-<summary><strong>Option C: Antigravity Configuration (Windows) ⚠️</strong></summary>
+<summary><strong>⚠️ Option C: Antigravity Configuration (Windows)</strong></summary>
 
 Due to a stdin/stdout newline handling bug (CRLF vs LF) in Antigravity IDE on Windows, running `server.py` directly will throw errors.
 If you are using Antigravity on Windows, you **must** point the `args` to `backend/mcp_wrapper.py`:
@@ -592,7 +592,7 @@ To ensure the AI uses the memory system correctly, it's recommended to include t
 The full version includes detailed read/write guidelines and memory maintenance protocols — trim as needed.
 
 <details>
-<summary><strong>Click to expand the recommended System Prompt</strong></summary>
+<summary><strong>📋 Click to expand the recommended System Prompt</strong></summary>
 
 ```markdown
 ### [Boot Protocol]

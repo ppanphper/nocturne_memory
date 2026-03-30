@@ -167,7 +167,7 @@ Nocturne Memory 采用极简但高可用（High-Availability）的 **SQLite/Post
 *   `system://boot` → **启动引导（AI 每次醒来自动加载核心身份）**
 
 <details>
-<summary><strong>展开查看数据模型深度解析（图后端 + 树前端）</strong></summary>
+<summary><strong>🧬 展开查看数据模型深度解析（图后端 + 树前端）</strong></summary>
 
 ### 🧬 图后端 + 树前端 (Graph Backend, Tree Frontend)
 
@@ -311,7 +311,7 @@ claude mcp list
 > 看到 `nocturne-memory` 并且状态为 `Connected`，就说明配置成功了。
 
 <details>
-<summary><strong>方案 C：Antigravity 客户端配置 (Windows) ⚠️</strong></summary>
+<summary><strong>⚠️ 方案 C：Antigravity 客户端配置 (Windows)</strong></summary>
 
 由于 Antigravity IDE 在 Windows 上的换行符处理存在 bug（CRLF vs LF），直接运行 `server.py` 会报错。
 如果你使用 Antigravity (Windows)，**必须**将配置中的 `args` 指向 `backend/mcp_wrapper.py`：
@@ -594,7 +594,7 @@ docker compose down -v
 另有一版更详细但并不是开箱即用的提示词可供参考：[`docs/system_prompt.md`](docs/system_prompt.md)。
 
 <details>
-<summary><strong>点击展开推荐 System Prompt</strong></summary>
+<summary><strong>📋 点击展开推荐 System Prompt</strong></summary>
 
 ```markdown
 ### [启动协议]
