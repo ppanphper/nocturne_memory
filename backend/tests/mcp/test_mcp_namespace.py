@@ -111,8 +111,12 @@ async def test_full_mcp_crud_with_namespace_isolation(mcp_env):
 
     # --- Alias isolation ---
     set_namespace("agent_a")
-    assert "Success" in await add_alias(new_uri="writer://agent_copy",
-                                         target_uri="core://agent", priority=5)
+    assert "Success" in await add_alias(
+        new_uri="writer://agent_copy",
+        target_uri="core://agent",
+        priority=5,
+        disclosure="When mirroring agent identity",
+    )
 
     set_namespace("agent_b")
     alias_b = await read_memory("writer://agent_copy")
@@ -150,6 +154,55 @@ async def test_system_boot_isolation(mcp_env):
     assert "Agent A" not in boot_b
 
 
+@pytest.mark.asyncio
+async def test_system_boot_per_namespace_uris(mcp_env):
+    """Per-namespace CORE_MEMORY_URIS override the global fallback."""
+    from mcp_server import read_memory
+
+    await _seed_two_agents()
+
+    # agent_a: boot only core://agent (skip core://my_user)
+    # agent_b: boot only core://agent (its own override)
+    os.environ["CORE_MEMORY_URIS__agent_a"] = "core://agent"
+    os.environ["CORE_MEMORY_URIS__agent_b"] = "core://agent"
+    try:
+        set_namespace("agent_a")
+        boot_a = await read_memory("system://boot")
+        assert "Agent A" in boot_a
+        # core://my_user is in the global fallback but NOT in agent_a's override
+        assert "met User" not in boot_a
+
+        set_namespace("agent_b")
+        boot_b = await read_memory("system://boot")
+        assert "Agent B" in boot_b
+        assert "Agent A" not in boot_b
+    finally:
+        os.environ.pop("CORE_MEMORY_URIS__agent_a", None)
+        os.environ.pop("CORE_MEMORY_URIS__agent_b", None)
+
+
+@pytest.mark.asyncio
+async def test_system_boot_per_namespace_empty_override(mcp_env):
+    """An explicit empty CORE_MEMORY_URIS__ns should NOT fall back to the global list."""
+    from mcp_server import read_memory
+    
+    # Mock global list with something
+    os.environ["CORE_MEMORY_URIS"] = "core://global"
+    
+    # Mock an explicit empty list for agent_c
+    os.environ["CORE_MEMORY_URIS__agent_c"] = ""
+    
+    try:
+        set_namespace("agent_c")
+        boot_c = await read_memory("system://boot")
+        # Should NOT load global
+        assert "core://global" not in boot_c
+        assert "(No core memories loaded" in boot_c or "Loaded: 0/0" in boot_c
+    finally:
+        os.environ.pop("CORE_MEMORY_URIS", None)
+        os.environ.pop("CORE_MEMORY_URIS__agent_c", None)
+
+
 # ====================================================================
 # 3. system://index and system://index/<domain>
 # ====================================================================
@@ -162,12 +215,12 @@ async def test_system_index_isolation(mcp_env):
     await _seed_two_agents()
 
     set_namespace("agent_a")
-    index_a = await read_memory("system://index")
+    index_a = await read_memory("system://index/core")
     assert "my_user" in index_a
     assert "notes" in index_a
 
     set_namespace("agent_b")
-    index_b = await read_memory("system://index")
+    index_b = await read_memory("system://index/core")
     assert "my_user" not in index_b
     assert "notes" not in index_b
 
@@ -179,13 +232,13 @@ async def test_system_index_domain_isolation(mcp_env):
 
     set_namespace("agent_a")
     await create_memory(parent_uri="core://", content="A core data", priority=0,
-                        title="a_core", disclosure="")
+                        title="a_core", disclosure="When reviewing agent A core index")
     await create_memory(parent_uri="writer://", content="A writer data", priority=0,
-                        title="a_writer", disclosure="")
+                        title="a_writer", disclosure="When reviewing agent A writer index")
 
     set_namespace("agent_b")
     await create_memory(parent_uri="core://", content="B core data", priority=0,
-                        title="b_core", disclosure="")
+                        title="b_core", disclosure="When reviewing agent B core index")
 
     set_namespace("agent_a")
     index_core = await read_memory("system://index/core")
@@ -280,9 +333,9 @@ async def test_delete_cascade_isolation(mcp_env):
     for ns in ("agent_a", "agent_b"):
         set_namespace(ns)
         await create_memory(parent_uri="core://", content=f"Parent {ns}",
-                            priority=0, title="parent", disclosure="")
+                            priority=0, title="parent", disclosure=f"When reviewing parent memory in {ns}")
         await create_memory(parent_uri="core://parent", content=f"Child {ns}",
-                            priority=1, title="child", disclosure="")
+                            priority=1, title="child", disclosure=f"When reviewing child memory in {ns}")
 
     set_namespace("agent_a")
     await delete_memory("core://parent/child")
@@ -327,7 +380,7 @@ async def test_default_namespace_mcp_full_flow(mcp_env):
     assert "Default agent identity" in boot
 
     # Index
-    index = await read_memory("system://index")
+    index = await read_memory("system://index/core")
     assert "agent" in index
     assert "my_user" in index
 
@@ -346,7 +399,11 @@ async def test_default_namespace_mcp_full_flow(mcp_env):
 
     # Alias
     assert "Success" in await add_alias(
-        new_uri="writer://agent_ref", target_uri="core://agent", priority=5)
+        new_uri="writer://agent_ref",
+        target_uri="core://agent",
+        priority=5,
+        disclosure="When mirroring default agent identity",
+    )
 
     alias_content = await read_memory("writer://agent_ref")
     assert "Updated default agent" in alias_content

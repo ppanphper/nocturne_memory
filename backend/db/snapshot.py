@@ -37,7 +37,7 @@ TABLE_PKS = {
     "memories": "id",
     "edges": "id",
     "paths": ("namespace", "domain", "path"),
-    "glossary_keywords": ("keyword", "node_uuid"),
+    "glossary_keywords": ("keyword", "node_uuid", "namespace"),
 }
 
 
@@ -88,11 +88,12 @@ class ChangesetStore:
                 data = json.load(f)
             
             rows = data.get("rows", {})
-            # Backward compatibility: migrate old paths without namespace
+            # Backward compatibility: migrate old paths and glossary_keywords without namespace
             # to include namespace="" and fix their keys
             migrated_rows = {}
             for old_key, row in list(rows.items()):
-                if row.get("table") == "paths":
+                table = row.get("table")
+                if table in ("paths", "glossary_keywords"):
                     changed = False
                     if row.get("before") and "namespace" not in row["before"]:
                         row["before"]["namespace"] = ""
@@ -101,8 +102,10 @@ class ChangesetStore:
                         row["after"]["namespace"] = ""
                         changed = True
                     
-                    if changed:
-                        new_key = _make_row_key("paths", row["before"] if row["before"] else row["after"])
+                    # For glossary_keywords we must re-key anyway because the TABLE_PKS tuple length changed,
+                    # so old keys don't have the namespace component.
+                    if changed or table == "glossary_keywords":
+                        new_key = _make_row_key(table, row["before"] if row["before"] else row["after"])
                         migrated_rows[new_key] = row
                     else:
                         migrated_rows[old_key] = row

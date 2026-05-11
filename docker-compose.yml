@@ -1,3 +1,7 @@
+# Before running: cp .env.example .env && edit .env
+# API_TOKEN is required. Generate one with:
+#   python -c "import secrets; print(secrets.token_urlsafe(32))"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,10 +21,10 @@ services:
   backend-api:
     build:
       context: ./backend
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8233
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?ssl=disable
-      API_TOKEN: ${API_TOKEN:-}
+      API_TOKEN: ${API_TOKEN:?See .env.example}
       VALID_DOMAINS: ${VALID_DOMAINS}
       CORE_MEMORY_URIS: ${CORE_MEMORY_URIS}
       SNAPSHOT_DIR: /app/snapshots
@@ -29,8 +33,9 @@ services:
         condition: service_healthy
     volumes:
       - snapshots_data:/app/snapshots
+      - backups_data:/app/backups
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8233/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -43,18 +48,20 @@ services:
     command: python run_sse.py
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?ssl=disable
-      API_TOKEN: ${API_TOKEN:-}
+      API_TOKEN: ${API_TOKEN:?See .env.example}
       VALID_DOMAINS: ${VALID_DOMAINS}
       CORE_MEMORY_URIS: ${CORE_MEMORY_URIS}
       SNAPSHOT_DIR: /app/snapshots
       SKIP_DB_INIT: "true"
-      PORT: "8001"
+      PORT: "8234"
       HOST: 0.0.0.0
+      AUTO_OPEN_BROWSER: "false"
     depends_on:
       backend-api:
         condition: service_healthy
     volumes:
       - snapshots_data:/app/snapshots
+      - backups_data:/app/backups
     restart: unless-stopped
 
   nginx:
@@ -72,3 +79,4 @@ services:
 volumes:
   postgres_data:
   snapshots_data:
+  backups_data:

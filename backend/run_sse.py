@@ -1,33 +1,39 @@
 import os
 import sys
+import contextlib
+import threading
+import time
+import webbrowser
+
+# Prevent the MCP lifespan from starting a duplicate embedded web server.
+os.environ["_NOCTURNE_SSE_MODE"] = "1"
+
 import uvicorn
 
 # Ensure we can import from backend dir
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from auth import BearerTokenAuthMiddleware
-from namespace_middleware import NamespaceMiddleware
-from mcp_server import mcp
+from auth import enforce_network_auth
+from mcp_server import mcp, build_web_app, FRONTEND_DIR
 
 
 def main():
     """
-    Run the Nocturne Memory MCP server using SSE (Server-Sent Events) transport.
-    This is required for clients that don't support stdio (like some web-based tools).
+    Single-process server: MCP transports + REST API + frontend UI.
+
+    After running `npm run build` in frontend/, the admin UI is accessible
+    at the same port — no separate dev server needed.
     """
-    print("Initializing Nocturne Memory SSE Server...")
+    port = int(os.getenv("PORT", 8233))
+    host = os.getenv("HOST", "127.0.0.1")
 
-    # For legacy SSE clients (like some older UI tools or Claude Desktop)
-    # This exposes GET /sse and POST /messages/
+    enforce_network_auth(host=host)
+
+    print("Initializing Nocturne Memory Server...")
+
+    # --- MCP transports ---
     sse_asgi_app = mcp.sse_app("/")
-
-    # For newer Streamable HTTP clients (like GitHub Copilot type: "http")
-    # This exposes GET/POST on /mcp
     streamable_asgi_app = mcp.streamable_http_app()
-
-    # Combine routes into one ASGI app
-    from starlette.applications import Starlette
-    import contextlib
 
     @contextlib.asynccontextmanager
     async def combined_lifespan(app):
@@ -36,21 +42,28 @@ def main():
             await stack.enter_async_context(streamable_asgi_app.router.lifespan_context(app))
             yield
 
-    routes = []
-    routes.extend(sse_asgi_app.router.routes)
-    routes.extend(streamable_asgi_app.router.routes)
-    combined_app = Starlette(routes=routes, lifespan=combined_lifespan)
+    extra_routes = list(sse_asgi_app.router.routes) + list(streamable_asgi_app.router.routes)
 
-    app = NamespaceMiddleware(BearerTokenAuthMiddleware(combined_app, excluded_paths=[]))
+    final_app = build_web_app(
+        extra_routes=extra_routes,
+        extra_prefixes=["/sse", "/messages", "/mcp"],
+        lifespan=combined_lifespan,
+    )
 
-    port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "0.0.0.0")
+    print(f"Server starting on http://{host}:{port}")
+    print(f"  MCP (SSE):   http://{host}:{port}/sse")
+    print(f"  MCP (HTTP):  http://{host}:{port}/mcp")
+    print(f"  REST API:    http://{host}:{port}/api/docs")
+    print(f"  Admin UI:    http://{host}:{port}/")
 
-    print(f"Starting SSE Server on http://{host}:{port}")
-    print(f"Legacy SSE Endpoint: http://{host}:{port}/sse")
-    print(f"Streamable HTTP Endpoint: http://{host}:{port}/mcp")
+    auto_open = os.environ.get("AUTO_OPEN_BROWSER", "true").lower() not in ("false", "0", "no")
+    if auto_open:
+        def _open_browser():
+            time.sleep(1.5)
+            webbrowser.open(f"http://localhost:{port}/")
+        threading.Thread(target=_open_browser, daemon=True).start()
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(final_app, host=host, port=port)
 
 
 if __name__ == "__main__":

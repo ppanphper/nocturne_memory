@@ -61,7 +61,7 @@ async def _backup_postgresql_via_python(engine: AsyncEngine, backup_path: str):
             with open(backup_path, "w", encoding="utf-8") as f:
                 f.write('{\n')
                 f.write('  "format": "nocturne-postgresql-backup-v1",\n')
-                f.write(f'  "created_at": "{datetime.utcnow().isoformat()}Z",\n')
+                f.write(f'  "created_at": "{datetime.now().isoformat()}Z",\n')
                 f.write(f'  "table_order": {json.dumps(table_order)},\n')
                 f.write('  "tables": {\n')
 

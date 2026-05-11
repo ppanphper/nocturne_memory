@@ -14,6 +14,8 @@ This module contains only graph-domain business logic.
 """
 
 import uuid as uuid_lib
+import unicodedata
+from collections import defaultdict
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 from sqlalchemy import (
@@ -33,6 +35,7 @@ from .models import (
     Edge,
     Path,
     GlossaryKeyword,
+    MemoryAccessLog,
     ChangeCollector,
     escape_like_literal,
     serialize_row,
@@ -69,6 +72,25 @@ class GraphService:
     # =========================================================================
     # Read Operations
     # =========================================================================
+
+    async def log_access(self, node_uuid: str, namespace: str, context: Optional[str] = None) -> None:
+        """
+        Asynchronously log an access event and update the node's last_accessed_at timestamp.
+        """
+        from datetime import datetime
+        async with self.session() as session:
+            await session.execute(
+                update(Node)
+                .where(Node.uuid == node_uuid)
+                .values(last_accessed_at=datetime.now())
+            )
+            
+            log_entry = MemoryAccessLog(
+                node_uuid=node_uuid,
+                namespace=namespace,
+                context=context
+            )
+            session.add(log_entry)
 
     async def get_memory_by_path(
         self, path: str, domain: str = "core", namespace: str = ""
@@ -161,8 +183,7 @@ class GraphService:
             stmt = (
                 select(Path.domain, Path.path, Path.namespace)
                 .select_from(Path)
-                .join(Edge, Path.edge_id == Edge.id)
-                .where(Edge.child_uuid == node_uuid)
+                .where(Path.node_uuid == node_uuid)
             )
             if not search_all_namespaces:
                 stmt = stmt.where(Path.namespace == namespace)
@@ -265,16 +286,32 @@ class GraphService:
             prefix = f"{context_path}/" if context_path else None
 
             child_uuids = {edge.child_uuid for edge, _ in rows}
+            edge_ids = {edge.id for edge, _ in rows}
             approx_children_count_map: Dict[str, int] = {}
+            paths_by_edge_id: Dict[int, List[Path]] = defaultdict(list)
             if child_uuids:
                 count_result = await session.execute(
-                    select(Edge.parent_uuid, func.count(Edge.id))
-                    .where(Edge.parent_uuid.in_(child_uuids))
+                    select(Edge.parent_uuid, func.count(Edge.id.distinct()))
+                    .join(Path, Path.edge_id == Edge.id)
+                    .where(
+                        Edge.parent_uuid.in_(child_uuids),
+                        Path.namespace == namespace,
+                    )
                     .group_by(Edge.parent_uuid)
                 )
                 approx_children_count_map = {
                     parent_uuid: count for parent_uuid, count in count_result.all()
                 }
+
+            if edge_ids:
+                path_result = await session.execute(
+                    select(Path).where(
+                        Path.namespace == namespace,
+                        Path.edge_id.in_(edge_ids),
+                    )
+                )
+                for p in path_result.scalars().all():
+                    paths_by_edge_id[p.edge_id].append(p)
 
             children = []
             seen = set()
@@ -283,13 +320,7 @@ class GraphService:
                     continue
                 seen.add(edge.child_uuid)
 
-                path_result = await session.execute(
-                    select(Path).where(
-                        Path.namespace == namespace,
-                        Path.edge_id == edge.id,
-                    )
-                )
-                all_paths = path_result.scalars().all()
+                all_paths = paths_by_edge_id[edge.id]
 
                 if node_uuid == ROOT_NODE_UUID and context_domain:
                     has_domain_path = any(p.domain == context_domain for p in all_paths)
@@ -399,11 +430,273 @@ class GraphService:
                         "name": path_obj.path.rsplit("/", 1)[-1],
                         "priority": edge.priority,
                         "memory_id": memory.id,
-                        "node_uuid": edge.child_uuid,
+                        "node_uuid": path_obj.node_uuid,
                     }
                 )
 
             return paths
+
+    async def get_diagnostics(self, namespace: str = "", days_stale: int = 30, max_children: int = 10, priority_thresholds: Dict[int, int] = None, domain: str = None) -> Dict[str, Any]:
+        """
+        Get a diagnostic report of the memory graph for a given namespace.
+        Returns stale nodes and crowded parent nodes.
+        """
+        from datetime import datetime, timedelta
+        if priority_thresholds is None:
+            priority_thresholds = {0: 3, 1: 7, 2: 14}
+            
+        async with self.session() as session:
+            # First find when we actually started tracking last_accessed_at
+            tracking_stmt = select(func.min(Node.last_accessed_at)).where(Node.last_accessed_at != None)
+            tracking_result = await session.execute(tracking_stmt)
+            tracking_start_date = tracking_result.scalar_one_or_none()
+
+            # If we don't have any access logs yet, default to today
+            if not tracking_start_date:
+                tracking_start_date = datetime.now()
+
+            # We query nodes where their *effective* last access time is < cutoff_date.
+            # For nodes with last_accessed_at != null, effective time is last_accessed_at
+            # For nodes with last_accessed_at == null, effective time is MAX(created_at, tracking_start_date)
+            # Since tracking_start_date is a constant, we can do this logic in Python or SQL.
+            # We'll fetch all nodes and filter in Python to handle the MAX logic easily.
+            all_nodes_stmt = (
+                select(Path, Node, Edge, Memory)
+                .select_from(Path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .join(Node, Node.uuid == Edge.child_uuid)
+                .join(Memory, and_(Memory.node_uuid == Node.uuid, Memory.deprecated == False))
+                .where(Path.namespace == namespace)
+            )
+            if domain:
+                all_nodes_stmt = all_nodes_stmt.where(Path.domain == domain)
+            
+            all_nodes_result = await session.execute(all_nodes_stmt)
+
+            stale_nodes = {}
+            for path_obj, node, edge, memory in all_nodes_result.all():
+                if node.last_accessed_at:
+                    effective_date = node.last_accessed_at
+                else:
+                    node_created = node.created_at or datetime.now()
+                    effective_date = max(node_created, tracking_start_date)
+
+                # Determine the threshold based on priority
+                prio = edge.priority if edge.priority is not None else 999
+                threshold_days = priority_thresholds.get(prio, days_stale)
+                cutoff_date = datetime.now() - timedelta(days=threshold_days)
+
+                if effective_date < cutoff_date:
+                    key = node.uuid
+                    
+                    # Check if this node is already in the dict. If it is, only overwrite 
+                    # if the current path has a higher priority (smaller number).
+                    existing_prio = 999
+                    if key in stale_nodes:
+                        existing_val = stale_nodes[key].get("priority")
+                        existing_prio = existing_val if existing_val is not None else 999
+                        
+                    if key not in stale_nodes or prio < existing_prio:
+                        # Calculate exactly how many days stale this is
+                        stale_days_calc = round((datetime.now() - effective_date).total_seconds() / 86400.0, 1)
+                        
+                        stale_nodes[key] = {
+                            "uuid": node.uuid,
+                            "uri": f"{path_obj.domain}://{path_obj.path}",
+                            "created_at": node.created_at.isoformat() if node.created_at else None,
+                            "last_accessed_at": node.last_accessed_at.isoformat() if node.last_accessed_at else None,
+                            "effective_date": effective_date.isoformat(),
+                            "stale_days": stale_days_calc,
+                            "threshold_days": threshold_days,
+                            "priority": edge.priority,
+                            "title": path_obj.path.rsplit("/", 1)[-1],
+                            "memory_id": memory.id
+                        }
+
+            # 2. Crowded Nodes (parents with > max_children)
+            crowded_stmt = (
+                select(Edge.parent_uuid, func.count(Edge.child_uuid.distinct()).label("child_count"))
+                .join(Path, Path.edge_id == Edge.id)
+                .where(Path.namespace == namespace)
+            )
+            if domain:
+                crowded_stmt = crowded_stmt.where(Path.domain == domain)
+            
+            crowded_stmt = (
+                crowded_stmt.group_by(Edge.parent_uuid)
+                .having(func.count(Edge.child_uuid.distinct()) > max_children)
+            )
+            crowded_result = await session.execute(crowded_stmt)
+
+            crowded_parents = {}
+            for parent_uuid, count in crowded_result.all():
+                if parent_uuid == ROOT_NODE_UUID:
+                    # special case for root
+                    crowded_parents[parent_uuid] = {
+                        "uuid": parent_uuid,
+                        "uri": f"{domain if domain else 'core'}://",
+                        "title": "(root)",
+                        "child_count": count
+                    }
+                else:
+                    path_stmt = (
+                        select(Path)
+                        .where(Path.node_uuid == parent_uuid, Path.namespace == namespace)
+                    )
+                    if domain:
+                        path_stmt = path_stmt.where(Path.domain == domain)
+                        
+                    path_stmt = path_stmt.limit(1)
+                    
+                    path_res = await session.execute(path_stmt)
+                    path_obj = path_res.scalar_one_or_none()
+                    if path_obj:
+                        crowded_parents[parent_uuid] = {
+                            "uuid": parent_uuid,
+                            "uri": f"{path_obj.domain}://{path_obj.path}",
+                            "title": path_obj.path.rsplit("/", 1)[-1],
+                            "child_count": count
+                        }
+
+            # 3. Orphaned Paths (paths where the parent path does not exist)
+            all_paths_stmt = (
+                select(Path.domain, Path.path, Node, Memory)
+                .join(Node, Node.uuid == Path.node_uuid)
+                .outerjoin(Memory, and_(Memory.node_uuid == Node.uuid, Memory.deprecated == False))
+                .where(Path.namespace == namespace)
+            )
+            if domain:
+                all_paths_stmt = all_paths_stmt.where(Path.domain == domain)
+            
+            all_paths_result = await session.execute(all_paths_stmt)
+            paths_dict = {}
+            for domain, path_str, node, memory in all_paths_result.all():
+                paths_dict[(domain, path_str)] = (node, memory)
+
+            parent_node_groups: Dict[tuple, List[str]] = defaultdict(list)
+
+            orphaned_nodes = []
+            for (domain, path_str), (node, memory) in paths_dict.items():
+                if "/" in path_str:
+                    parent_path_str = path_str.rsplit("/", 1)[0]
+                    parent_node_groups[(domain, parent_path_str, node.uuid)].append(path_str)
+                    if (domain, parent_path_str) not in paths_dict:
+                        snippet = ""
+                        memory_id = None
+                        if memory:
+                            memory_id = memory.id
+                            if memory.content:
+                                snippet = memory.content[:50].replace('\n', ' ') + "..." if len(memory.content) > 50 else memory.content.replace('\n', ' ')
+
+                        orphaned_nodes.append({
+                            "uuid": node.uuid,
+                            "uri": f"{domain}://{path_str}",
+                            "created_at": node.created_at.isoformat() if node.created_at else None,
+                            "last_accessed_at": node.last_accessed_at.isoformat() if node.last_accessed_at else None,
+                            "memory_id": memory_id,
+                            "snippet": snippet
+                        })
+                else:
+                    parent_node_groups[(domain, "", node.uuid)].append(path_str)
+
+            duplicate_aliases = []
+            for (domain, parent_path_str, node_uuid), paths_list in parent_node_groups.items():
+                if len(paths_list) > 1:
+                    _, memory = paths_dict[(domain, paths_list[0])]
+                    duplicate_aliases.append({
+                        "uuid": node_uuid,
+                        "memory_id": memory.id if memory else None,
+                        "domain": domain,
+                        "parent_path": parent_path_str,
+                        "paths": paths_list,
+                        "count": len(paths_list)
+                    })
+
+            return {
+                "stale_nodes": sorted(list(stale_nodes.values()), key=lambda x: x.get("last_accessed_at") or x.get("created_at") or ""),
+                "crowded_nodes": sorted(list(crowded_parents.values()), key=lambda x: x["child_count"], reverse=True),
+                "orphaned_nodes": sorted(orphaned_nodes, key=lambda x: x.get("created_at") or ""),
+                "duplicate_aliases": sorted(duplicate_aliases, key=lambda x: x["count"], reverse=True)
+            }
+
+    async def get_random_memory(self, namespace: str = "", domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Pick a weighted-random memory node. Weight = staleness * priority_multiplier.
+        Older and higher-priority memories are more likely to surface.
+        Returns dict with node_uuid, uri, priority, last_accessed_at, or None if empty.
+        """
+        import random
+        from datetime import datetime
+
+        async with self.session() as session:
+            # 1. 数据库层面直接过滤和聚合，只拉取计算权重所需的标量字段，大幅降低内存和传输开销
+            stmt = (
+                select(
+                    Node.uuid,
+                    Node.last_accessed_at,
+                    Node.created_at,
+                    func.min(func.coalesce(Edge.priority, 2)).label("best_priority")
+                )
+                .select_from(Path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .join(Node, Node.uuid == Edge.child_uuid)
+                .where(Path.namespace == namespace)
+                .where(Node.uuid != ROOT_NODE_UUID)
+                .group_by(Node.uuid, Node.last_accessed_at, Node.created_at)
+            )
+            
+            if domain:
+                stmt = stmt.where(Path.domain == domain)
+            else:
+                stmt = stmt.where(Path.domain != "system")
+            
+            result = await session.execute(stmt)
+            rows = result.all()
+
+            if not rows:
+                return None
+
+            # 2. 在 Python 中计算权重并进行加权随机选择
+            now = datetime.now()
+            weights = []
+            for row in rows:
+                last = row.last_accessed_at or row.created_at or now
+                staleness_days = max((now - last).total_seconds() / 86400.0, 0.5)
+                # 优先级 0 -> 1x, 1 -> 0.5x, 2 -> 0.25x, 等等
+                priority = row.best_priority if row.best_priority is not None else 2
+                mult = max(0.5 ** max(0, priority), 1e-12)
+                weights.append(staleness_days * mult)
+
+            chosen = random.choices(rows, weights=weights, k=1)[0]
+
+            # 3. 针对选中的 node，查出它在当前 namespace 下的一个随机 URI
+            uri_stmt = (
+                select(Path.domain, Path.path)
+                .join(Edge, Path.edge_id == Edge.id)
+                .where(Edge.child_uuid == chosen.uuid)
+                .where(Path.namespace == namespace)
+            )
+            
+            if domain:
+                uri_stmt = uri_stmt.where(Path.domain == domain)
+            else:
+                uri_stmt = uri_stmt.where(Path.domain != "system")
+                
+            uri_result = await session.execute(uri_stmt)
+            uri_rows = uri_result.all()
+            
+            if not uri_rows:
+                return None
+                
+            chosen_domain, chosen_path = random.choice(uri_rows)
+            chosen_uri = f"{chosen_domain}://{chosen_path}"
+
+            return {
+                "node_uuid": chosen.uuid,
+                "uri": chosen_uri,
+                "priority": chosen.best_priority,
+                "last_accessed_at": chosen.last_accessed_at.isoformat() if chosen.last_accessed_at else None,
+            }
 
     # =========================================================================
     # Layer 0: Row-Level Primitives
@@ -430,6 +723,13 @@ class GraphService:
         deprecated: bool = False,
     ) -> Memory:
         """Insert a new memory row and flush to obtain its ID."""
+        # Canonicalize content to NFC at the write boundary so all stored
+        # strings are consistently normalized.  This is an intentional
+        # whole-content policy: the system has no byte-level version diff or
+        # rollback, so converting historical NFD data to NFC on write is
+        # the desired migration path, not a side-effect.
+        content = unicodedata.normalize("NFC", content)
+        
         memory = Memory(
             content=content,
             node_uuid=node_uuid,
@@ -474,10 +774,10 @@ class GraphService:
         return edge, True
 
     async def _insert_path(
-        self, session: AsyncSession, domain: str, path: str, edge_id: int, namespace: str = ""
+        self, session: AsyncSession, domain: str, path: str, edge_id: int, node_uuid: str, namespace: str = ""
     ) -> Path:
         """Insert a new path row with the given namespace."""
-        path_obj = Path(namespace=namespace, domain=domain, path=path, edge_id=edge_id)
+        path_obj = Path(namespace=namespace, domain=domain, path=path, edge_id=edge_id, node_uuid=node_uuid)
         session.add(path_obj)
         return path_obj
 
@@ -494,7 +794,7 @@ class GraphService:
         if not row:
             return None
         path_obj, edge = row
-        return path_obj, edge, edge.child_uuid
+        return path_obj, edge, path_obj.node_uuid
 
     async def _count_paths_for_edge(self, session: AsyncSession, edge_id: int) -> int:
         """Count how many path rows reference a given edge."""
@@ -514,7 +814,7 @@ class GraphService:
         exclude_path_prefix: Optional[str] = None,
         exclude_namespace: Optional[str] = None,
     ) -> int:
-        """Count paths whose edge points TO this node (edge.child_uuid).
+        """Count paths pointing TO this node (via Path.node_uuid).
 
         When search_all_namespaces is True, counts across ALL namespaces (GC callers use this).
         Otherwise only counts paths in the specified namespace.
@@ -522,8 +822,7 @@ class GraphService:
         stmt = (
             select(func.count())
             .select_from(Path)
-            .join(Edge, Path.edge_id == Edge.id)
-            .where(Edge.child_uuid == node_uuid)
+            .where(Path.node_uuid == node_uuid)
         )
 
         if not search_all_namespaces:
@@ -533,7 +832,10 @@ class GraphService:
             safe_prefix = escape_like_literal(exclude_path_prefix)
             exclude_cond = and_(
                 Path.domain == exclude_domain,
-                Path.path.like(f"{safe_prefix}/%", escape="\\"),
+                or_(
+                    Path.path == exclude_path_prefix,
+                    Path.path.like(f"{safe_prefix}/%", escape="\\"),
+                )
             )
             if exclude_namespace is not None:
                 exclude_cond = and_(exclude_cond, Path.namespace == exclude_namespace)
@@ -737,7 +1039,7 @@ class GraphService:
                 )
                 if not existing.scalar_one_or_none():
                     session.add(
-                        Path(namespace=namespace, domain=domain, path=child_path, edge_id=child_edge.id)
+                        Path(namespace=namespace, domain=domain, path=child_path, edge_id=child_edge.id, node_uuid=child_edge.child_uuid)
                     )
 
                 await self._cascade_create_paths(
@@ -841,6 +1143,10 @@ class GraphService:
             collector.record("glossary_keywords", serialize_row(kw))
 
         await session.execute(
+            delete(GlossaryKeyword).where(GlossaryKeyword.node_uuid == node_uuid)
+        )
+
+        await session.execute(
             delete(Memory).where(Memory.node_uuid == node_uuid)
         )
         node_row = await session.execute(select(Node).where(Node.uuid == node_uuid))
@@ -867,7 +1173,7 @@ class GraphService:
         edge, edge_created = await self._get_or_create_edge(
             session, parent_uuid, child_uuid, name, priority, disclosure
         )
-        path_obj = await self._insert_path(session, domain, path, edge.id, namespace)
+        path_obj = await self._insert_path(session, domain, path, edge.id, child_uuid, namespace)
         await self._cascade_create_paths(session, child_uuid, domain, path, _visited=None, namespace=namespace)
         return {
             "edge": edge,
@@ -946,6 +1252,16 @@ class GraphService:
             )
             for mem in active_mems.scalars().all():
                 collector.record("memories", serialize_row(mem))
+
+            kw_result = await session.execute(
+                select(GlossaryKeyword).where(GlossaryKeyword.node_uuid == node_uuid)
+            )
+            for kw in kw_result.scalars().all():
+                collector.record("glossary_keywords", serialize_row(kw))
+
+        await session.execute(
+            delete(GlossaryKeyword).where(GlossaryKeyword.node_uuid == node_uuid)
+        )
 
         await self._deprecate_node_memories(session, node_uuid)
 
@@ -1217,7 +1533,11 @@ class GraphService:
                 raise ValueError(
                     f"Target path '{target_domain}://{target_path}' not found"
                 )
-            _, _, target_node_uuid = target
+            _, target_edge, target_node_uuid = target
+
+            # Inherit disclosure from the target if not explicitly provided
+            if disclosure is None and target_edge.disclosure:
+                disclosure = target_edge.disclosure
 
             if "/" in new_path:
                 parent_path = new_path.rsplit("/", 1)[0]
@@ -1324,13 +1644,45 @@ class GraphService:
                 raise ValueError(f"Path '{domain}://{path}' not found")
             _, target_edge, target_node_uuid = target
 
-            # Pre-flight orphan check
+            # Pre-flight orphan check for children
             child_edges_result = await session.execute(
                 select(Edge).where(Edge.parent_uuid == target_node_uuid)
             )
             child_edges = child_edges_result.scalars().all()
 
             would_orphan = []
+            repair_tasks = []
+
+            safe_prefix = escape_like_literal(path)
+            exclude_cond = and_(
+                Path.domain == domain,
+                or_(
+                    Path.path == path,
+                    Path.path.like(f"{safe_prefix}/%", escape="\\"),
+                )
+            )
+            if namespace is not None:
+                exclude_cond = and_(exclude_cond, Path.namespace == namespace)
+
+            surviving_query = select(Path).where(
+                Path.node_uuid == target_node_uuid,
+                ~exclude_cond,
+            )
+            if namespace is not None:
+                surviving_query = surviving_query.where(Path.namespace == namespace)
+            
+            from sqlalchemy import case
+            surviving_query = surviving_query.order_by(
+                case(
+                    (Path.domain == domain, 0),
+                    else_=1
+                ),
+                Path.path
+            )
+            
+            surviving_paths_result = await session.execute(surviving_query.limit(1))
+            surviving_path = surviving_paths_result.scalar_one_or_none()
+
             for child_edge in child_edges:
                 surviving_count = await self._count_incoming_paths(
                     session,
@@ -1341,7 +1693,10 @@ class GraphService:
                     exclude_namespace=namespace,
                 )
                 if surviving_count == 0:
-                    would_orphan.append(child_edge)
+                    if surviving_path is None:
+                        would_orphan.append(child_edge)
+                    else:
+                        repair_tasks.append(child_edge)
 
             if would_orphan:
                 details = ", ".join(
@@ -1354,6 +1709,56 @@ class GraphService:
                     f"Create alternative paths for these children first, "
                     f"or remove them explicitly."
                 )
+
+            if repair_tasks and surviving_path:
+                for child_edge in repair_tasks:
+                    base_name = child_edge.name
+                    expected_path = f"{surviving_path.path}/{base_name}" if surviving_path.path else base_name
+
+                    suffix_counter = 0
+                    max_attempts = 100
+                    while True:
+                        existing_path_result = await session.execute(
+                            select(1).where(
+                                Path.namespace == surviving_path.namespace,
+                                Path.domain == surviving_path.domain,
+                                Path.path == expected_path,
+                            )
+                        )
+                        if existing_path_result.scalar_one_or_none() is None:
+                            break
+
+                        if suffix_counter >= max_attempts:
+                            raise ValueError(
+                                f"Cannot find a free path for child '{base_name}' "
+                                f"under '{surviving_path.domain}://{surviving_path.path}' "
+                                f"after {max_attempts} attempts"
+                            )
+
+                        if suffix_counter == 0:
+                            fallback_name = f"{base_name}_{child_edge.child_uuid[:8]}"
+                        else:
+                            fallback_name = f"{base_name}_{child_edge.child_uuid[:8]}_{suffix_counter}"
+
+                        expected_path = f"{surviving_path.path}/{fallback_name}" if surviving_path.path else fallback_name
+                        suffix_counter += 1
+
+                    await self._insert_path(
+                        session,
+                        surviving_path.domain,
+                        expected_path,
+                        child_edge.id,
+                        child_edge.child_uuid,
+                        surviving_path.namespace,
+                    )
+                    await self._cascade_create_paths(
+                        session,
+                        child_edge.child_uuid,
+                        surviving_path.domain,
+                        expected_path,
+                        _visited=None,
+                        namespace=surviving_path.namespace,
+                    )
 
             collector = ChangeCollector()
             affected_nodes = await self._search.get_node_uuids_for_prefix(session, domain, path, namespace=namespace)
@@ -1389,6 +1794,11 @@ class GraphService:
 
         Creates/finds the edge from the parent to the target node,
         creates the path entry, and ensures the node has an active memory.
+
+        Rollback may need to restore a deleted path for a node that still has
+        surviving paths in other namespaces. That is allowed here because this
+        method reconstructs a previously existing mapping; it is not creating a
+        new cross-namespace association from scratch.
         """
         if path == "":
             raise ValueError("Cannot restore the root path.")
@@ -1446,7 +1856,7 @@ class GraphService:
             edge, _ = await self._get_or_create_edge(
                 session, parent_uuid, node_uuid, edge_name, priority, disclosure
             )
-            await self._insert_path(session, domain, path, edge.id, namespace=namespace)
+            await self._insert_path(session, domain, path, edge.id, node_uuid, namespace=namespace)
             await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
 
             return {"uri": f"{domain}://{path}", "node_uuid": node_uuid}
@@ -1525,11 +1935,8 @@ class GraphService:
             if memory.node_uuid:
                 paths_result = await session.execute(
                     select(Path.domain, Path.path)
-                    .select_from(Path)
-                    .join(Edge, Path.edge_id == Edge.id)
-                    .where(Edge.child_uuid == memory.node_uuid)
+                    .where(Path.node_uuid == memory.node_uuid)
                 )
-                # Deduplicate paths since they might exist in multiple namespaces
                 paths = list({f"{r[0]}://{r[1]}" for r in paths_result.all()})
 
             return {
@@ -1584,11 +1991,8 @@ class GraphService:
                 if memory.node_uuid:
                     paths_result = await session.execute(
                         select(Path.domain, Path.path)
-                        .select_from(Path)
-                        .join(Edge, Path.edge_id == Edge.id)
-                        .where(Edge.child_uuid == memory.node_uuid)
+                        .where(Path.node_uuid == memory.node_uuid)
                     )
-                    # Deduplicate paths since they might exist in multiple namespaces
                     paths = list({f"{r[0]}://{r[1]}" for r in paths_result.all()})
                 return {
                     "id": memory.id,

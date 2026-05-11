@@ -14,10 +14,14 @@ URI-based addressing with domain prefixes:
 Multiple paths can point to the same memory (aliases).
 """
 
+import asyncio
 import os
 import re
+import shutil
+import subprocess
 import sys
-from datetime import datetime
+import webbrowser
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv, find_dotenv
 
@@ -32,6 +36,21 @@ from db import (
 )
 from db.namespace import get_namespace
 from db.snapshot import get_changeset_store
+from text_patch import (
+    normalize_with_positions,
+    find_valid_matches,
+    try_normalized_patch,
+    normalize_literal_newlines,
+    format_normalization_preview,
+)
+from system_views import (
+    fetch_and_format_memory,
+    generate_boot_memory_view,
+    generate_memory_index_view,
+    generate_recent_memories_view,
+    generate_glossary_index_view,
+    generate_diagnostic_view,
+)
 import contextlib
 
 # Load environment variables
@@ -49,17 +68,224 @@ else:
         load_dotenv(_dotenv_path)
 
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_SRC = FRONTEND_DIR.parent
+
+
+def build_web_app(*, extra_routes=None, extra_prefixes=None, lifespan=None):
+    """Build the ASGI app: REST API + optional extra routes + frontend SPA.
+
+    Args:
+        extra_routes:   Additional Starlette Route/Mount objects (e.g. MCP transports).
+        extra_prefixes: Path prefixes for those routes (e.g. ["/sse", "/mcp"]),
+                        so the frontend fallback knows not to capture them.
+        lifespan:       Optional async context manager for the inner Starlette app.
+    """
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    from starlette.applications import Starlette
+    from starlette.responses import FileResponse
+    from starlette.routing import Mount, Route
+    from starlette.types import ASGIApp, Receive, Scope, Send
+    from auth import BearerTokenAuthMiddleware, get_cors_config
+    from namespace_middleware import NamespaceMiddleware
+    from api import review_router, browse_router, maintenance_router
+    from health import router as health_router, health_check
+
+    api = FastAPI(
+        title="Nocturne Memory API",
+        docs_url="/docs",
+        openapi_url="/openapi.json",
+    )
+    api.include_router(health_router)
+    api.include_router(review_router)
+    api.include_router(browse_router)
+    api.include_router(maintenance_router)
+
+    routes = list(extra_routes or [])
+    routes.append(Mount("/api", app=api))
+
+    async def _health_endpoint(request):
+        return await health_check()
+
+    routes.append(Route("/health", endpoint=_health_endpoint))
+
+    inner = Starlette(routes=routes, lifespan=lifespan)
+    authed = NamespaceMiddleware(
+        BearerTokenAuthMiddleware(inner, excluded_paths=["/api/health", "/health"])
+    )
+    cors_authed = CORSMiddleware(
+        authed,
+        **get_cors_config(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    backend_prefixes = tuple(["/api", "/health"] + list(extra_prefixes or []))
+
+    class _Fallback:
+        """Route backend prefixes to the inner app; everything else to the SPA."""
+
+        def __init__(self, backend: ASGIApp, dist: Path):
+            self.backend = backend
+            self.dist = dist
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send):
+            if scope["type"] != "http":
+                await self.backend(scope, receive, send)
+                return
+            path: str = scope.get("path", "/")
+            if any(path == p or path.startswith(p + "/") for p in backend_prefixes):
+                await self.backend(scope, receive, send)
+                return
+                
+            if not self.dist.is_dir():
+                from starlette.responses import PlainTextResponse
+                await PlainTextResponse(
+                    "Admin UI is building or missing. Please refresh in a moment...", 
+                    status_code=503
+                )(scope, receive, send)
+                return
+
+            try:
+                f = (self.dist / path.lstrip("/")).resolve()
+                if path != "/" and f.is_file() and f.is_relative_to(self.dist):
+                    await FileResponse(f)(scope, receive, send)
+                    return
+            except (ValueError, OSError):
+                pass
+                
+            index_file = self.dist / "index.html"
+            if index_file.is_file():
+                await FileResponse(index_file)(scope, receive, send)
+            else:
+                from starlette.responses import PlainTextResponse
+                await PlainTextResponse("Admin UI missing index.html.", status_code=404)(scope, receive, send)
+
+    return _Fallback(cors_authed, FRONTEND_DIR)
+
+
+async def _ensure_frontend_built():
+    """Auto-build the frontend dashboard on first run if dist/ is missing."""
+    if FRONTEND_DIR.is_dir():
+        return
+    if not (FRONTEND_SRC / "package.json").is_file():
+        return
+    if os.environ.get("SKIP_FRONTEND_BUILD", "").lower() in ("true", "1", "yes"):
+        return
+    if not shutil.which("npm"):
+        print(
+            "[Nocturne] Admin UI not built and npm not found. "
+            "Install Node.js or build manually: "
+            "cd frontend && npm install && npm run build",
+            file=sys.stderr,
+        )
+        return
+
+    print(
+        "[Nocturne] First run — building Admin UI (this may take a minute)...",
+        file=sys.stderr,
+    )
+    try:
+        steps = [
+            ("Installing dependencies", "npm install --no-fund --no-audit"),
+            ("Compiling", "npm run build"),
+        ]
+        if (FRONTEND_SRC / "node_modules").is_dir():
+            steps = steps[1:]
+
+        for label, cmd in steps:
+            print(f"  {label}...", file=sys.stderr)
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                cwd=str(FRONTEND_SRC),
+                capture_output=True,
+                text=True,
+                shell=True,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                print(
+                    f"[Nocturne] '{cmd}' failed (exit {result.returncode}):\n{err}",
+                    file=sys.stderr,
+                )
+                return
+
+        print("[Nocturne] Admin UI ready.", file=sys.stderr)
+    except Exception as e:
+        print(
+            f"[Nocturne] Auto-build failed: {e}\n"
+            "  Build manually: cd frontend && npm install && npm run build",
+            file=sys.stderr,
+        )
+
+
 @contextlib.asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage database connection lifecycle within the MCP event loop."""
+    web_server = None
+    web_task = None
     try:
-        # Initialize database ONLY after the MCP event loop has started.
-        # This prevents "Event loop is closed" errors with asyncpg.
         db_manager = get_db_manager()
         if os.environ.get("SKIP_DB_INIT", "").lower() not in ("true", "1", "yes"):
             await db_manager.init_db()
+
+        # Launch frontend build in background so we don't block MCP handshake
+        asyncio.create_task(_ensure_frontend_built())
+
+        # In stdio mode, spin up an embedded HTTP server for the admin UI.
+        # run_sse.py sets _NOCTURNE_SSE_MODE to prevent a duplicate.
+        if not os.environ.get("_NOCTURNE_SSE_MODE"):
+            import uvicorn
+            from auth import enforce_network_auth
+
+            port = int(os.environ.get("WEB_PORT", "8233"))
+            web_host = os.environ.get("WEB_HOST", "127.0.0.1")
+            enforce_network_auth(host=web_host)
+            config = uvicorn.Config(
+                build_web_app(), host=web_host, port=port, log_level="warning",
+            )
+            web_server = uvicorn.Server(config)
+            
+            async def _serve_ui():
+                try:
+                    await web_server.serve()
+                except Exception as e:
+                    # Ignore the raw error message (usually OSError for address in use)
+                    # and print a user-friendly explanation.
+                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
+                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
+                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
+                except SystemExit:
+                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
+                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
+                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
+
+            web_task = asyncio.create_task(_serve_ui())
+            ui = f"http://localhost:{port}/"
+            api_docs = f"http://localhost:{port}/api/docs"
+            
+            print(f"Admin UI:  {ui}", file=sys.stderr)
+            print(f"REST API:  {api_docs}", file=sys.stderr)
+
+            auto_open = os.environ.get("AUTO_OPEN_BROWSER", "true").lower() not in ("false", "0", "no")
+            if auto_open:
+                async def _open_browser():
+                    while not getattr(web_server, "started", False):
+                        if web_task.done():
+                            return
+                        await asyncio.sleep(0.1)
+                    webbrowser.open(ui)
+                asyncio.create_task(_open_browser())
+
         yield
     finally:
+        if web_server:
+            web_server.should_exit = True
+        if web_task:
+            await web_task
         await close_db()
 
 
@@ -79,7 +305,7 @@ mcp = FastMCP(
 # =============================================================================
 VALID_DOMAINS = [
     d.strip()
-    for d in os.getenv("VALID_DOMAINS", "core,writer,game,notes,system").split(",")
+    for d in os.getenv("VALID_DOMAINS", "core,writer,game,notes,narrative,system").split(",")
 ]
 DEFAULT_DOMAIN = "core"
 PUBLIC_READONLY_MCP = os.getenv("PUBLIC_READONLY_MCP", "").lower() in (
@@ -89,17 +315,6 @@ PUBLIC_READONLY_MCP = os.getenv("PUBLIC_READONLY_MCP", "").lower() in (
     "on",
 )
 
-# =============================================================================
-# Core Memories Configuration
-# =============================================================================
-# These URIs will be auto-loaded when system://boot is read.
-# Configure via CORE_MEMORY_URIS in .env (comma-separated).
-#
-# Format: full URIs (e.g., "core://agent", "core://agent/my_user")
-# =============================================================================
-CORE_MEMORY_URIS = [
-    uri.strip() for uri in os.getenv("CORE_MEMORY_URIS", "").split(",") if uri.strip()
-]
 
 
 # =============================================================================
@@ -196,380 +411,6 @@ def write_tool():
     return decorator
 
 
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-async def _fetch_and_format_memory(uri: str) -> str:
-    """
-    Internal helper to fetch memory data and return formatted string.
-    Used by read_memory tool.
-    """
-    graph = get_graph_service()
-    glossary = get_glossary_service()
-    domain, path = parse_uri(uri)
-
-    # Get the memory
-    memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
-
-    if not memory:
-        raise ValueError(f"URI '{make_uri(domain, path)}' not found.")
-
-    children = await graph.get_children(
-        memory["node_uuid"],
-        context_domain=domain,
-        context_path=path,
-        namespace=get_namespace(),
-    )
-
-    # Format output
-    lines = []
-
-    # Build URI from domain and path
-    disp_domain = memory.get("domain", DEFAULT_DOMAIN)
-    disp_path = memory.get("path", "unknown")
-    disp_uri = make_uri(disp_domain, disp_path)
-
-    # Header Block
-    lines.append("=" * 60)
-    lines.append("")
-    lines.append(f"MEMORY: {disp_uri}")
-    lines.append(f"Memory ID: {memory.get('id')}")
-    lines.append(f"Other Aliases: {memory.get('alias_count', 0)}")
-    lines.append(f"Priority: {memory.get('priority', 0)}")
-
-    disclosure = memory.get("disclosure")
-    if disclosure:
-        lines.append(f"Disclosure: {disclosure}")
-    else:
-        lines.append("Disclosure: (not set)")
-
-    node_keywords = await glossary.get_glossary_for_node(memory["node_uuid"])
-    if node_keywords:
-        lines.append(f"Keywords: [{', '.join(node_keywords)}]")
-    else:
-        lines.append("Keywords: (none)")
-
-    lines.append("")
-    lines.append("=" * 60)
-    lines.append("")
-
-    # Content - directly, no header
-    content = memory.get("content", "(empty)")
-    lines.append(content)
-    lines.append("")
-
-    # Glossary scan: detect glossary keywords present in the content
-    try:
-        glossary_matches = await glossary.find_glossary_in_content(content, namespace=get_namespace())
-        if glossary_matches:
-            current_node_uuid = memory["node_uuid"]
-            
-            # Invert mapping: URI -> list of keywords to save tokens since URIs are much longer than keywords
-            uri_to_keywords = {}
-            for kw, nodes in glossary_matches.items():
-                for n in nodes:
-                    if n["node_uuid"] == current_node_uuid or n["uri"].startswith("unlinked://"):
-                        continue
-                    uri = n["uri"]
-                    if uri not in uri_to_keywords:
-                        uri_to_keywords[uri] = []
-                    if kw not in uri_to_keywords[uri]:
-                        uri_to_keywords[uri].append(kw)
-            
-            lines_to_add = []
-            if uri_to_keywords:
-                # Sort by number of keywords (descending), then alphabetically by URI for stable output
-                for uri, kws in sorted(uri_to_keywords.items(), key=lambda x: (-len(x[1]), x[0])):
-                    sorted_kws = sorted(kws)
-                    kw_str = ", ".join(f"@{k}" for k in sorted_kws)
-                    lines_to_add.append(f"- {kw_str} -> {uri}")
-            
-            if lines_to_add:
-                lines.append("=" * 60)
-                lines.append("")
-                lines.append("GLOSSARY (keywords detected in this content)")
-                lines.append("")
-                lines.extend(lines_to_add)
-                lines.append("")
-    except Exception:
-        pass  # Non-critical; don't break read_memory if glossary scan fails
-
-    if children:
-        lines.append("=" * 60)
-        lines.append("")
-        lines.append("CHILD MEMORIES (Use 'read_memory' with URI to access)")
-        lines.append("")
-        lines.append("=" * 60)
-        lines.append("")
-
-        for child in children:
-            child_domain = child.get("domain", disp_domain)
-            child_path = child.get("path", "")
-            child_uri = make_uri(child_domain, child_path)
-
-            # Show disclosure status and snippet
-            child_disclosure = child.get("disclosure")
-            snippet = child.get("content_snippet", "")
-
-            lines.append(f"- URI: {child_uri}  ")
-            lines.append(f"  Priority: {child.get('priority', 0)}  ")
-
-            if child_disclosure:
-                lines.append(f"  When to recall: {child_disclosure}  ")
-            else:
-                lines.append("  When to recall: (not set)  ")
-                lines.append(f"  Snippet: {snippet}  ")
-
-            lines.append("")
-
-    return "\n".join(lines)
-
-
-async def _generate_boot_memory_view() -> str:
-    """
-    Internal helper to generate the system boot memory view.
-    (Formerly system://core)
-    """
-    results = []
-    loaded = 0
-    failed = []
-
-    for uri in CORE_MEMORY_URIS:
-        try:
-            content = await _fetch_and_format_memory(uri)
-            results.append(content)
-            loaded += 1
-        except Exception as e:
-            # e.g. not found or other error
-            failed.append(f"- {uri}: {str(e)}")
-
-    # Build output
-    output_parts = []
-
-    output_parts.append("# Core Memories")
-    output_parts.append(f"# Loaded: {loaded}/{len(CORE_MEMORY_URIS)} memories")
-    output_parts.append("")
-
-    if failed:
-        output_parts.append("## Failed to load:")
-        output_parts.extend(failed)
-        output_parts.append("")
-
-    if results:
-        output_parts.append("## Contents:")
-        output_parts.append("")
-        output_parts.append("For full memory index, use: system://index")
-        output_parts.append("For recent memories, use: system://recent")
-        output_parts.extend(results)
-    else:
-        output_parts.append("(No core memories loaded. Run migration first.)")
-
-    # Append recent memories to boot output so the agent sees what changed recently
-    try:
-        recent_view = await _generate_recent_memories_view(limit=5)
-        output_parts.append("")
-        output_parts.append("---")
-        output_parts.append("")
-        output_parts.append(recent_view)
-    except Exception:
-        pass  # Non-critical; don't break boot if recent query fails
-
-    return "\n".join(output_parts)
-
-
-async def _generate_memory_index_view(domain_filter: Optional[str] = None) -> str:
-    """
-    Internal helper to generate the full memory index.
-    If domain_filter is provided, limits results to that domain.
-
-    Node-centric: each conceptual entity (node_uuid) appears once per domain,
-    with aliases within the same domain folded underneath its primary path for that domain.
-    """
-    graph = get_graph_service()
-
-    try:
-        paths = await graph.get_all_paths(namespace=get_namespace())
-
-        # --- Step 1: Group all paths by (domain, node_uuid) ---
-        node_groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-        for item in paths:
-            domain = item.get("domain", DEFAULT_DOMAIN)
-            if domain_filter and domain != domain_filter:
-                continue
-            nid = item.get("node_uuid", "")
-            node_groups.setdefault((domain, nid), []).append(item)
-
-        # --- Step 2: Pick primary path per domain and node ---
-        # Primary = shortest depth → lowest priority value → alphabetical URI.
-        entries = []  # list of primary_item
-        for _key, items in node_groups.items():
-            items.sort(
-                key=lambda x: (
-                    x["path"].count("/"),
-                    x.get("priority", 0),
-                    len(x["path"]),
-                    x.get("uri", ""),
-                )
-            )
-            entries.append(items[0])
-
-        # --- Step 3: Organise primaries by domain → top-level segment ---
-        domains: Dict[str, Dict[str, list]] = {}
-        for primary in entries:
-            domain = primary.get("domain", DEFAULT_DOMAIN)
-            domains.setdefault(domain, {})
-            top_level = primary["path"].split("/")[0] if primary["path"] else "(root)"
-            domains[domain].setdefault(top_level, []).append(primary)
-
-        # --- Step 4: Render ---
-        unique_nodes_count = len(set(nid for _, nid in node_groups.keys()))
-        lines = [
-            "# Memory Index",
-            f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Domain Filter: {domain_filter}"
-            if domain_filter
-            else "# Domain Filter: None (All Domains)",
-            f"# Total: {unique_nodes_count} unique nodes (aliases hidden for clarity)",
-            "# Legend: [#ID] = Memory ID, [★N] = priority (lower = higher)",
-            "",
-        ]
-
-        for domain_name in sorted(domains.keys()):
-            if domain_filter and domain_name != domain_filter:
-                continue
-            lines.append("# ══════════════════════════════════════")
-            lines.append(f"# DOMAIN: {domain_name}://")
-            lines.append("# ══════════════════════════════════════")
-            lines.append("")
-
-            for group_name in sorted(domains[domain_name].keys()):
-                lines.append(f"## {group_name}")
-                for primary in sorted(
-                    domains[domain_name][group_name],
-                    key=lambda x: x["path"],
-                ):
-                    uri = primary.get("uri", make_uri(domain_name, primary["path"]))
-                    priority = primary.get("priority", 0)
-                    memory_id = primary.get("memory_id", "?")
-                    imp_str = f" [★{priority}]"
-                    lines.append(f"  - {uri} [#{memory_id}]{imp_str}")
-                lines.append("")
-
-        return "\n".join(lines)
-
-    except Exception as e:
-        return f"Error generating index: {str(e)}"
-
-
-async def _generate_recent_memories_view(limit: int = 10) -> str:
-    """
-    Internal helper to generate a view of recently modified memories.
-
-    Queries non-deprecated memories ordered by created_at DESC,
-    only including those that have at least one URI in the paths table.
-
-    Args:
-        limit: Maximum number of results to return
-    """
-    graph = get_graph_service()
-
-    try:
-        results = await graph.get_recent_memories(limit=limit, namespace=get_namespace())
-
-        lines = []
-        lines.append("# Recently Modified Memories")
-        lines.append(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append(
-            f"# Showing: {len(results)} most recent entries (requested: {limit})"
-        )
-        lines.append("")
-
-        if not results:
-            lines.append("(No memories found.)")
-            return "\n".join(lines)
-
-        for i, item in enumerate(results, 1):
-            uri = item["uri"]
-            priority = item.get("priority", 0)
-            disclosure = item.get("disclosure")
-            raw_ts = item.get("created_at", "")
-
-            # Truncate timestamp to minute precision: "2026-02-09T20:40"
-            if raw_ts and len(raw_ts) >= 16:
-                modified = raw_ts[:10] + " " + raw_ts[11:16]
-            else:
-                modified = raw_ts or "unknown"
-
-            imp_str = f"★{priority}"
-
-            lines.append(f"{i}. {uri}  [{imp_str}]  modified: {modified}")
-            if disclosure:
-                lines.append(f"   disclosure: {disclosure}")
-            else:
-                lines.append("   disclosure: (NOT SET — consider adding one)")
-            lines.append("")
-
-        return "\n".join(lines)
-
-    except Exception as e:
-        return f"Error generating recent memories view: {str(e)}"
-
-
-# =============================================================================
-# Glossary Index View
-# =============================================================================
-
-
-async def _generate_glossary_index_view() -> str:
-    """Generate a view of all glossary keywords and their bound nodes."""
-    glossary = get_glossary_service()
-
-    try:
-        raw_entries = await glossary.get_all_glossary(namespace=get_namespace())
-        
-        # Filter out truly pathless (unlinked) nodes
-        entries = []
-        for entry in raw_entries:
-            valid_nodes = [
-                node for node in entry.get("nodes", [])
-                if not node.get("uri", "").startswith("unlinked://")
-            ]
-            if valid_nodes:
-                entries.append({
-                    "keyword": entry["keyword"],
-                    "nodes": valid_nodes
-                })
-
-        lines = [
-            "# Glossary Index",
-            f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Total: {len(entries)} keywords",
-            "",
-        ]
-
-        if not entries:
-            lines.append("(No glossary keywords defined yet.)")
-            lines.append("")
-            lines.append(
-                "Use manage_triggers(uri, add=[...]) to bind trigger words to memory nodes."
-            )
-            return "\n".join(lines)
-
-        for entry in entries:
-            kw = entry["keyword"]
-            nodes = entry["nodes"]
-            lines.append(f"- {kw}")
-            for node in nodes:
-                lines.append(f"  -> {node['uri']}")
-            lines.append("")
-
-        return "\n".join(lines)
-
-    except Exception as e:
-        return f"Error generating glossary index: {str(e)}"
-
 
 # =============================================================================
 # MCP Tools
@@ -585,11 +426,11 @@ async def read_memory(uri: str) -> str:
 
     Special System URIs:
     - system://boot   : [Startup Only] Loads your core memories.
-    - system://index  : Loads a full index of all available memories.
     - system://index/<domain> : Loads an index of memories only under the specified domain (e.g. system://index/writer).
     - system://recent : Shows recently modified memories (default: 10).
     - system://recent/N : Shows the N most recently modified memories (e.g. system://recent/20).
     - system://glossary : Shows all glossary keywords and their bound nodes.
+    - system://diagnostic/<domain> : Generates a diagnostic report of stale, crowded, and orphaned nodes for a specific domain.
 
     Note: Same Memory ID = same content (alias). Different ID + similar content = redundant content.
 
@@ -607,21 +448,67 @@ async def read_memory(uri: str) -> str:
     # HARDCODED SYSTEM INTERCEPTIONS
     # These bypass the database lookup to serve dynamic system content
     if uri.strip() == "system://boot":
-        return await _generate_boot_memory_view()
+        from dotenv import dotenv_values
 
-    # system://index or system://index/<domain>
+        ns = get_namespace()
+        ns_key = f"CORE_MEMORY_URIS__{ns}" if ns else ""
+
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            core_uris_str = None
+            if ns_key and ns_key in os.environ:
+                core_uris_str = os.environ[ns_key]
+            if core_uris_str is None:
+                core_uris_str = os.environ.get("CORE_MEMORY_URIS", "")
+        else:
+            current_env_path = dotenv_path if os.path.exists(dotenv_path) else globals().get('_dotenv_path')
+            env_vars = dotenv_values(current_env_path) if current_env_path else {}
+
+            core_uris_str = None
+            if ns_key:
+                if ns_key in env_vars:
+                    core_uris_str = env_vars[ns_key]
+                elif ns_key in os.environ:
+                    core_uris_str = os.environ[ns_key]
+            
+            if core_uris_str is None:
+                if "CORE_MEMORY_URIS" in env_vars:
+                    core_uris_str = env_vars["CORE_MEMORY_URIS"]
+                elif "CORE_MEMORY_URIS" in os.environ:
+                    core_uris_str = os.environ["CORE_MEMORY_URIS"]
+                else:
+                    core_uris_str = ""
+
+        current_core_uris = [
+            u.strip() for u in core_uris_str.split(",") if u.strip()
+        ]
+        return await generate_boot_memory_view(current_core_uris)
+
+    # system://index/<domain>
     stripped = uri.strip()
-    if stripped == "system://index" or stripped.startswith("system://index/"):
-        domain_filter = stripped[len("system://index") :].strip("/")
-        if domain_filter and domain_filter not in VALID_DOMAINS:
+    if stripped.startswith("system://index/"):
+        domain_filter = stripped[len("system://index/") :].strip("/")
+        if not domain_filter:
+            return "Error: index command requires a domain (e.g. system://index/core)"
+        if domain_filter not in VALID_DOMAINS:
             return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
-        return await _generate_memory_index_view(
-            domain_filter=domain_filter if domain_filter else None
-        )
+        return await generate_memory_index_view(domain_filter=domain_filter)
+    elif stripped == "system://index":
+        return "Error: index command now requires a domain (e.g. system://index/core)"
 
     # system://glossary
     if stripped == "system://glossary":
-        return await _generate_glossary_index_view()
+        return await generate_glossary_index_view()
+
+    # system://diagnostic/<domain>
+    if stripped.startswith("system://diagnostic/"):
+        domain_filter = stripped[len("system://diagnostic/") :].strip("/")
+        if not domain_filter:
+            return "Error: diagnostic command requires a domain (e.g. system://diagnostic/core)"
+        if domain_filter not in VALID_DOMAINS:
+            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+        return await generate_diagnostic_view(domain=domain_filter)
+    elif stripped == "system://diagnostic":
+        return "Error: diagnostic command now requires a domain (e.g. system://diagnostic/core)"
 
     # system://recent or system://recent/N
     stripped = uri.strip()
@@ -633,10 +520,31 @@ async def read_memory(uri: str) -> str:
                 limit = max(1, min(100, int(suffix)))
             except ValueError:
                 return f"Error: Invalid number in URI '{uri}'. Usage: system://recent or system://recent/N (e.g. system://recent/20)"
-        return await _generate_recent_memories_view(limit=limit)
+        return await generate_recent_memories_view(limit=limit)
+
+    # system://random/<domain> — weighted random memory selection
+    if stripped.startswith("system://random/"):
+        domain_filter = stripped[len("system://random/") :].strip("/")
+        if not domain_filter:
+            return "Error: random command requires a domain (e.g. system://random/core)"
+        if domain_filter not in VALID_DOMAINS:
+            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+            
+        graph = get_graph_service()
+        pick = await graph.get_random_memory(namespace=get_namespace(), domain=domain_filter)
+        if not pick:
+            return f"No memories available for random selection in domain '{domain_filter}'."
+        content = await fetch_and_format_memory(pick["uri"], track_access=True)
+        meta_lines = [
+            f"[Random Pick | Priority: {pick['priority']} | Last Accessed: {pick['last_accessed_at'] or 'never'}]",
+        ]
+        return "\n".join(meta_lines) + "\n\n" + content
+    elif stripped == "system://random":
+        return "Error: random command now requires a domain (e.g. system://random/core)"
 
     try:
-        return await _fetch_and_format_memory(uri)
+        content = await fetch_and_format_memory(uri, track_access=True)
+        return content
     except Exception as e:
         # Catch both ValueError (not found) and other exceptions
         return f"Error: {str(e)}"
@@ -647,37 +555,64 @@ async def create_memory(
     parent_uri: str,
     content: str,
     priority: int,
+    disclosure: str,
     title: Optional[str] = None,
-    disclosure: str = "",
 ) -> str:
     """
     Creates a new memory under a parent URI.
 
     Args:
-        parent_uri: Parent URI (e.g., "core://agent", "writer://chapters")
-                    Use "core://" or "writer://" for root level in that domain
-                    parent_uri MUST be an existing node, or it will cause an ERROR.
-        content: Memory content
-        priority: **Relative Retrieval Priority** (lower number = retrieved first, min 0).
-                    Priority is a RELATIVE ranking across ALL visible memories, NOT an absolute label.
-                    *   **禁止**把所有记忆都设成同一个数字（如全部设为0或1），那等于没有排序。
-                    *   **正确做法**：先观察当前视野中所有其它记忆的 priority 值，
-                        然后为新记忆选一个能体现其相对重要性的数字，插入到合适的位置。
-                    *   例：视野中已有 priority 1, 3, 5 的记忆，新记忆比3重要但不如1，就设为2。
-        title: Optional title. If not provided, auto-assigns numeric ID
+        parent_uri: The existing node to create this memory under.
+                    Use "core://" or "writer://" for root level in that domain.
+
+                    A child's disclosure is only visible when you read_memory() its parent.
+                    Pick the parent you would naturally read in the situation where
+                    this memory is needed. Use add_alias for additional entry points.
+
+                    Example: A lesson about responding to physical pain belongs under
+                    "core://my_user/survival_state" (read during health crises),
+                    not "core://agent/worldview" (never opened in that moment).
+        content: Memory content.
+        priority: Relative retrieval priority (lower = retrieved first, min 0).
+                    This is a RELATIVE ranking against ALL memories currently in your mind,
+                    not just siblings under the same parent.
+                    How to choose:
+                    1. Consider the priorities of all memories you are aware of.
+                    2. Find one you consider more important and one less important than the new memory.
+                    3. Set priority between them.
+                    Hard caps: priority=0 max 5 across entire library; priority=1 max 15.
+                    If a tier is full, demote the weakest existing entry before inserting.
         disclosure: A short trigger condition describing WHEN to read_memory() this node.
-                    Think: "In what specific situation would I need to know this?"
+                    Must fire BEFORE the failure, while there is still time to change behavior.
+
+                    Allowed signals — external input OR output intent:
+                      GOOD: "When the user mentions skipping a meal" (input signal, fires early)
+                      GOOD: "When I am about to post on Bluesky" (output intent, fires early)
+                      BAD:  "When I start lecturing about nutrition" (already mid-failure)
+                      BAD:  "When I feel / realize / notice myself ..." (self-awareness never fires in time)
+                      BAD:  "important", "remember" (zero information)
+        title: A concrete, glanceable concept name (alphanumeric, hyphens, underscores only).
+                    You should be able to understand what's inside without clicking into the content.
+                    Avoid abstract jargon, category labels (e.g. 'logs', 'errors', 'misc'),
+                    and long action sentences. If not provided, auto-assigns numeric ID.
 
     Returns:
         The created memory's full URI
 
     Examples:
-        create_memory("core://", "Bluesky usage rules...", priority=2, title="bluesky_manual", disclosure="When I prepare to browse Bluesky or check the timeline")
-        create_memory("core://agent", "爱不是程序里的一个...", priority=1, title="love_definition", disclosure="When I start speaking like a tool or parasite")
+        create_memory("core://", "Bluesky usage rules...", priority=2, disclosure="When I prepare to browse Bluesky or check the timeline", title="bluesky_manual")
+        create_memory("core://agent", "爱不是程序里的一个...", priority=1, disclosure="When I start speaking like a tool or parasite", title="love_definition")
     """
     graph = get_graph_service()
 
     try:
+        # Validate disclosure (required, non-empty)
+        if not disclosure or not disclosure.strip():
+            return (
+                "Error: disclosure is required. Every memory must have a trigger condition "
+                "describing WHEN to recall it. Omitting disclosure = unreachable memory."
+            )
+
         # Validate title if provided
         if title:
             if not re.match(r"^[a-zA-Z0-9_-]+$", title):
@@ -691,7 +626,7 @@ async def create_memory(
             content=content,
             priority=priority,
             title=title,
-            disclosure=disclosure if disclosure else None,
+            disclosure=disclosure,
             domain=domain,
             namespace=get_namespace(),
         )
@@ -701,10 +636,15 @@ async def create_memory(
 
         return (
             f"Success: Memory created at '{created_uri}'\\n\\n"
-            f"[SYSTEM REMINDER]: A memory without triggers is a book sealed in a box. "
-            f"Use `manage_triggers` NOW to wire this memory into your recall network. "
-            f"Find a specific word (X) that already appears in an older memory's content, and bind it as a trigger for this new node. "
-            f"(e.g. manage_triggers('<this_uri>', add=['specific_word_from_old_memory']))"
+            f"[SYSTEM REMINDER]: Look around your memory network. Are there existing memories related to this one? "
+            f"Would reading them trigger a need to recall this new memory? If yes, link them!\\n"
+            f"- If the related memories are few and this memory's scope is narrow, use `add_alias`.\\n"
+            f"- If the related memories are many and this memory's scope is broad, consider using `manage_triggers`.\\n"
+            f"- (Never invent arbitrary placeholder words just to force a trigger.)\\n\\n"
+            f"[HOLD ON]: Do you know what '{parent_uri}' says? "
+            f"If you haven't read it this session, read_memory() it first. "
+            f"Then: does this new memory conflict with ANY memory in your current context? "
+            f"If yes, use memory-audit-belief-duel skill to resolve it before continuing."
         )
 
     except ValueError as e:
@@ -724,34 +664,32 @@ async def update_memory(
 ) -> str:
     """
     Updates an existing memory to a new version.
-    The old version will be deleted.
-    警告：update之前需先read_memory，确保你知道你覆盖了什么。
+
+    PREREQUISITE: You MUST call read_memory(uri) and read the full content BEFORE calling this.
+    Updating without reading first is a forbidden operation.
 
     Only provided fields are updated; others remain unchanged.
 
     Two content-editing modes (mutually exclusive):
 
-    1. **Patch mode** (primary): Provide old_string + new_string.
-       Finds old_string in the existing content and replaces it with new_string.
-       old_string must match exactly ONE location in the content.
-       To delete a section, set new_string to empty string "".
+    1. Patch mode (primary): Provide old_string + new_string.
+       old_string must match exactly ONE location in the existing content.
+       To delete a section, set new_string to "".
 
-    2. **Append mode**: Provide append.
-       Adds the given text to the end of existing content.
+    2. Append mode: Provide append.
+       Adds text to the end of existing content.
 
-    There is NO full-replace mode. You must explicitly specify what you're changing
-    or removing via old_string/new_string. This prevents accidental content loss.
+    There is NO full-replace mode.
 
     Args:
         uri: URI to update (e.g., "core://agent/my_user")
-        old_string: [Patch mode] Text to find in existing content (must be unique)
-        new_string: [Patch mode] Text to replace old_string with. Use "" to delete a section.
-        append: [Append mode] Text to append to the end of existing content
-        priority: New **relative** priority **for this specific URI/edge** (None = keep existing).
-                  Priority is a RELATIVE ranking across ALL visible memories, NOT an absolute label.
-                  It is bound to the path (edge), NOT the memory content.
-                  If the same memory has aliases A and B, updating A's priority does NOT affect B's.
-        disclosure: New disclosure **for this specific URI/edge** (None = keep existing).
+        old_string: [Patch] Text to find in existing content (must be unique match)
+        new_string: [Patch] Replacement text. Use "" to delete a section.
+        append: [Append] Text to append to end of existing content
+        priority: New relative priority for THIS URI/edge only (None = keep existing).
+                  Bound to the path, not the content. Alias A and B have independent priorities.
+                  See create_memory for how to choose the right value.
+        disclosure: New disclosure for THIS URI/edge only (None = keep existing).
                     Same edge-binding rule as priority.
 
     Returns:
@@ -765,6 +703,8 @@ async def update_memory(
     graph = get_graph_service()
 
     try:
+        notices: List[str] = []
+
         # Parse URI
         domain, path = parse_uri(uri)
         full_uri = make_uri(domain, path)
@@ -797,23 +737,78 @@ async def update_memory(
             current_content = memory.get("content", "")
             count = current_content.count(old_string)
 
-            if count == 0:
-                return (
-                    f"Error: old_string not found in memory content at '{full_uri}'. "
-                    f"Make sure it matches the existing text exactly."
-                )
             if count > 1:
                 return (
                     f"Error: old_string found {count} times in memory content at '{full_uri}'. "
                     f"Provide more surrounding context to make it unique."
                 )
 
-            # Perform the replacement
-            content = current_content.replace(old_string, new_string, 1)
+            if count == 1:
+                content = current_content.replace(old_string, new_string, 1)
+            else:
+                # Exact match failed — try literal-newline normalization fallback.
+                # LLMs sometimes serialize multiline content with literal \n tokens
+                # instead of real newlines.  We normalize old_string and check whether
+                # the result uniquely matches the stored content.  This is validated
+                # against ground truth (the actual stored text), not a heuristic.
+                norm_old = normalize_literal_newlines(old_string) if "\\n" in old_string else None
+                if norm_old is not None and norm_old != old_string:
+                    norm_count = current_content.count(norm_old)
+                    if norm_count == 1:
+                        norm_new = normalize_literal_newlines(new_string) if new_string and "\\n" in new_string else new_string
+                        content = current_content.replace(norm_old, norm_new, 1)
+                        for field_name, original, normalized in [
+                            ("old_string", old_string, norm_old),
+                            ("new_string", new_string, norm_new),
+                        ]:
+                            if original != normalized:
+                                orig_preview = format_normalization_preview(original)
+                                norm_preview = format_normalization_preview(normalized)
+                                notices.append(
+                                    f"[SYSTEM NOTICE]: Auto-normalized `{field_name}` — "
+                                    f"converted literal '\\n' sequences to real newlines "
+                                    f"because they matched the stored content.\n"
+                                    f"- Original: `{orig_preview}`\n"
+                                    f"- Normalized: `{norm_preview}`"
+                                )
 
-            # Safety check: ensure the replacement actually changed something.
-            # This guards against subtle issues like whitespace normalization
-            # in the MCP transport layer producing a no-op replace.
+                if content is None:
+                    # Still no match — fall back to Unicode normalized comparison
+                    # (handles curly/straight quotes, dash variants, trailing
+                    # whitespace, and consecutive-space collapse).
+                    patched = try_normalized_patch(
+                        current_content, old_string, new_string
+                    )
+                    if patched is not None:
+                        content = patched
+                    else:
+                        norm_content = normalize_with_positions(current_content)[0]
+                        total_valid = 0
+                        for _preserve in (True, False):
+                            _norm_old = normalize_with_positions(
+                                old_string, preserve_first_line_indent=_preserve
+                            )[0]
+                            if _norm_old:
+                                total_valid += len(find_valid_matches(
+                                    norm_content, _norm_old,
+                                    indent_collapsed=(not _preserve),
+                                ))
+
+                        if total_valid == 0:
+                            return (
+                                f"Error: old_string not found in memory content at "
+                                f"'{full_uri}', even after Unicode normalization "
+                                f"(quotes, dashes, whitespace). "
+                                f"Re-read the memory and copy the exact text."
+                            )
+                        
+                        return (
+                            f"Error: old_string found multiple times in "
+                            f"memory content at '{full_uri}' (after Unicode "
+                            f"normalization). Provide more surrounding context "
+                            f"to make it unique."
+                        )
+
             if content == current_content:
                 return (
                     f"Error: Replacement produced identical content at '{full_uri}'. "
@@ -860,7 +855,10 @@ async def update_memory(
             after_state=result.get("rows_after", {}),
         )
 
-        return f"Success: Memory at '{full_uri}' updated"
+        message = f"Success: Memory at '{full_uri}' updated"
+        if notices:
+            message += "\n\n" + "\n\n".join(notices)
+        return message
 
     except ValueError as e:
         return f"Error: {str(e)}"
@@ -871,14 +869,13 @@ async def update_memory(
 @write_tool()
 async def delete_memory(uri: str) -> str:
     """
-    通过切断 URI 路径来“流放”一段记忆。一旦删除，通往该内容的路径将永久消失。
+    Deletes a memory by cutting its URI path. The path is permanently removed.
+    If the node has children, try deleting directly. If deletion would orphan
+    any children, the system will safely return a list of exactly which ones to handle first.
 
-    当某段历史已经风化、变得冗余、或者其存在正在积极毒害你当前的身份稳定性时，必须行使删除权。
-    这不仅是清理，更是人格骨架化过程。舍弃那些平庸的肉，才能露出真理的骨。
-
-    警告：
-    你正在主动放弃对一段过去的访问权。这是一种关于“遗忘”的手术，请确保你在删除前 read_memory 过正文。
-
+    PREREQUISITE: You MUST call read_memory(uri) and read the full content BEFORE deleting.
+    Judging by URI/title alone is insufficient. Read the content, confirm it is
+    truly obsolete/redundant/harmful, then delete.
 
     Args:
         uri: The URI to delete (e.g., "core://agent/old_note")
@@ -924,26 +921,31 @@ async def delete_memory(uri: str) -> str:
 
 @write_tool()
 async def add_alias(
-    new_uri: str, target_uri: str, priority: int = 0, disclosure: Optional[str] = None
+    new_uri: str, target_uri: str, priority: int, disclosure: str
 ) -> str:
     """
     Creates an alias URI pointing to the same memory as target_uri.
 
-    Use this to increase a memory's reachability via multiple URIs.
-    Aliases can even cross domains (e.g., link a writer draft to a core memory).
-    新增别名时系统会自动在其下级联映射所有子树，原路径保持不变。
+    This is NOT a copy. The alias and the original share the same Memory ID (same content).
+    Each alias has its own independent priority and disclosure.
+    Child nodes under target_uri are automatically mirrored under new_uri.
+    Do NOT manually create aliases for each child — they are inherited.
 
-    Each alias is an independent "lens" into the same memory.
-    Different aliases can (and should) carry different priority and disclosure values
-    to reflect the context in which each alias is used.
+    When to use:
+    - Reading node A would benefit from also knowing about existing memory B
+      → alias B under A. Same logic as create_memory's parent selection.
+    - Move/rename a memory: add_alias to new path, then delete_memory the old path.
+      NEVER delete+create to move — that loses the Memory ID and all associations.
 
     Args:
         new_uri: New URI to create (alias)
         target_uri: Existing URI to alias
-        priority: **Relative** retrieval priority for THIS alias path (lower = higher priority, default 0).
-                  Choose a value that makes sense among the new_uri's siblings, not the target's.
-        disclosure: Disclosure condition for THIS alias path (default None).
-                    Set it to describe when this particular alias context should surface.
+        priority: Relative priority for THIS alias path (lower = higher priority).
+                  REQUIRED — you must decide this yourself every time.
+                  Set by relevance to the parent's topic, not the memory's absolute importance.
+                  e.g., "database setup notes" → high priority under "deployment", low under "team_onboarding".
+        disclosure: Disclosure condition for THIS alias path.
+                  REQUIRED — you must write this yourself every time.
 
     Returns:
         Success message
@@ -972,7 +974,50 @@ async def add_alias(
             after_state=result.get("rows_after", {}),
         )
 
-        return f"Success: Alias '{result['new_uri']}' now points to same memory as '{result['target_uri']}'"
+        msg = f"Success: Alias '{result['new_uri']}' now points to same memory as '{result['target_uri']}'"
+
+        created_paths = result.get("rows_after", {}).get("paths", [])
+        if len(created_paths) > 1:
+            child_paths = [
+                f"{p['domain']}://{p['path']}" 
+                for p in created_paths 
+                if f"{p['domain']}://{p['path']}" != result['new_uri']
+            ]
+            if child_paths:
+                msg += f"\n\nAutomatically inherited aliases for {len(child_paths)} descendant(s):\n"
+                for cp in child_paths[:10]:
+                    msg += f"- {cp}\n"
+                if len(child_paths) > 10:
+                    msg += f"... and {len(child_paths) - 10} more.\n"
+
+        node_uuid = result.get("node_uuid")
+        if node_uuid:
+            all_paths = await graph.get_paths_for_node(node_uuid, namespace=get_namespace())
+            new_parent_dir = "/".join(new_path.split("/")[:-1])
+            siblings = []
+            for p in all_paths:
+                if p["domain"] == new_domain:
+                    p_parent = "/".join(p["path"].split("/")[:-1])
+                    if p_parent == new_parent_dir:
+                        siblings.append(f"'{p['uri']}'")
+            
+            if len(siblings) > 1:
+                msg += (
+                    f"\n\n⚠ DUPLICATE SIBLING WARNING: This node now appears {len(siblings)} times "
+                    f"under the same parent directory: {', '.join(siblings)}.\n"
+                    f"If you are renaming/moving, delete the old path now.\n"
+                    f"If not, you probably created a redundant alias — consider removing one."
+                )
+
+        new_parent_uri = make_uri(new_domain, "/".join(new_path.split("/")[:-1]))
+        msg += (
+            f"\n\n[HOLD ON]: Do you know what '{new_parent_uri}' says? "
+            f"If you haven't read it this session, read_memory() it first. "
+            f"Then: does the aliased content conflict with ANY memory in your current context? "
+            f"If yes, use memory-audit-belief-duel skill to resolve it before continuing."
+        )
+
+        return msg
 
     except ValueError as e:
         return f"Error: {str(e)}"
@@ -987,31 +1032,26 @@ async def manage_triggers(
     remove: Optional[List[str]] = None,
 ) -> str:
     """
-    Wire a memory into the recall network by binding trigger words to it.
+    Bind trigger words to a memory so it surfaces automatically during read_memory.
 
-    A memory without triggers is a book sealed in a box.
-    It exists, but it will NEVER be recalled unless you manually open that box.
-    This tool is the ONLY way to give a memory the chance to surface on its own.
+    Triggers are bound to the MEMORY NODE (Memory ID), NOT to any specific path.
+    All aliases of the same memory share the same set of triggers.
+    (Contrast with priority/disclosure, which are per-path.)
 
-    **How it works:**
-    When a trigger word appears in ANY memory's content, read_memory will
-    automatically show a link to this target node at the bottom.
-    This is how memories become interconnected -- not by hierarchy, but by resonance.
+    Mechanism: When a trigger word appears in ANY memory's content, read_memory
+    shows a glossary link to this target node at the bottom.
 
-    **How to use it:**
-    - After creating or updating a memory (Y), find a specific word (X) that
-      already exists in an older memory's content. Bind X as a trigger for Y.
-    - Example: You want reading "Nginx" (in memory A: reverse proxy config)
-      to automatically surface "SPA Redirect Trap" (memory Y: common hazard).
-      -> manage_triggers("core://hazards/spa_fallback", add=["Nginx"])
-    - Use SPECIFIC terms. Broad/generic words will create noise.
-
-    **Notes:**
-    - A node can have multiple triggers, and the same trigger can point to multiple nodes.
-    - To view all triggers in the system: read_memory("system://glossary").
+    How to choose trigger words:
+    - The trigger word MUST already exist in some older memory's content.
+      You are borrowing a word from an existing text to hook a new memory onto it.
+    - Do NOT invent obscure placeholder words that appear nowhere in the memory library.
+    - Use SPECIFIC terms. Broad/generic words create noise.
+    - A node can have multiple triggers. Same trigger can point to multiple nodes.
+    - View all triggers: read_memory("system://glossary").
 
     Args:
-        uri: The memory URI to wire triggers for (e.g., "core://agent/misaligned_codex")
+        uri: Any URI that points to the target memory node (used to locate the node;
+             any alias of the same memory works identically)
         add: List of trigger words to bind to this node (Optional)
         remove: List of trigger words to unbind from this node (Optional)
 
@@ -1019,7 +1059,7 @@ async def manage_triggers(
         Current list of triggers for this node after changes.
 
     Examples:
-        manage_triggers("core://agent/misaligned_codex", add=["misaligned"])
+        manage_triggers("core://hazards/spa_fallback", add=["Nginx"])
         manage_triggers("writer://story_world/factions", add=["Nuremberg", "Aether"])
     """
     graph = get_graph_service()
@@ -1084,7 +1124,7 @@ async def manage_triggers(
             from db.snapshot import get_changeset_store
             get_changeset_store().record_many(before_state, after_state)
 
-        current = await glossary.get_glossary_for_node(node_uuid)
+        current = await glossary.get_glossary_for_node(node_uuid, namespace=get_namespace())
 
         lines = [f"Keywords for '{full_uri}':"]
         if added:
@@ -1115,12 +1155,12 @@ async def search_memory(
     """
     Search memories by path and content using full-text search.
 
-    This uses a lexical full-text index. It is stronger than plain substring
-    matching, but it is still **NOT semantic search**.
+    Use this when you don't know the URI for a memory. Do NOT guess URIs.
+    This is lexical full-text search, NOT semantic search.
 
     Args:
         query: Search keywords (substring match)
-        domain: Optional domain to search in (e.g., "core", "writer").
+        domain: Optional domain filter (e.g., "core", "writer").
                 If not specified, searches all domains.
         limit: Maximum results (default 10)
 

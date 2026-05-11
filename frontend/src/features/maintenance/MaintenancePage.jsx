@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Trash2, Sparkles, AlertTriangle, RefreshCw,
-  ChevronDown, ChevronUp, ArrowRight, Unlink, Archive, CheckSquare, Square, Minus
+  ChevronDown, ChevronUp, ArrowRight, Unlink, Archive, CheckSquare, Square, Minus, Activity
 } from 'lucide-react';
 import { format } from 'date-fns';
 import DiffViewer from '../../components/DiffViewer';
@@ -21,9 +21,40 @@ export default function MaintenancePage() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchDeleting, setBatchDeleting] = useState(false);
 
+  const [logStats, setLogStats] = useState({ count: 0, oldest: null });
+  const [clearingLogs, setClearingLogs] = useState(false);
+
   useEffect(() => {
     loadOrphans();
+    loadStats();
   }, []);
+
+  const loadStats = async () => {
+    try {
+      const res = await api.get('/maintenance/access-logs/stats');
+      setLogStats(res.data);
+    } catch (err) {
+      console.error("Failed to load log stats:", err);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    const daysStr = window.prompt("Keep logs for how many days? (Enter 0 to clear all logs)", "30");
+    if (daysStr === null) return;
+    const days = parseInt(daysStr, 10);
+    if (isNaN(days) || days < 0) return;
+
+    setClearingLogs(true);
+    try {
+      const res = await api.delete('/maintenance/access-logs', { data: { keep_days: days } });
+      alert(`Cleared ${res.data.deleted} log entries.`);
+      loadStats();
+    } catch (err) {
+      alert("Failed to clear logs: " + (err.response?.data?.detail || err.message));
+    } finally {
+      setClearingLogs(false);
+    }
+  };
 
   const loadOrphans = async () => {
     setLoading(true);
@@ -311,6 +342,22 @@ export default function MaintenancePage() {
             <div className="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1">Orphaned</div>
             <div className="text-3xl font-mono text-rose-400">{orphaned.length}</div>
             <div className="text-slate-500 text-[11px] mt-1">unreachable (no paths)</div>
+          </div>
+          <div className="bg-slate-800/40 rounded-lg p-4 border border-slate-700/40 mt-6 relative">
+            <div className="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1 flex justify-between items-center">
+              Access Logs
+              <button 
+                onClick={handleClearLogs}
+                disabled={clearingLogs}
+                className="text-xs text-rose-400 hover:text-rose-300 disabled:opacity-50"
+              >
+                {clearingLogs ? "Clearing..." : "Clear"}
+              </button>
+            </div>
+            <div className="text-3xl font-mono text-indigo-400">{logStats.count}</div>
+            <div className="text-slate-500 text-[11px] mt-1">
+              {logStats.oldest ? `Oldest: ${format(new Date(logStats.oldest), 'MM-dd HH:mm')}` : "No records"}
+            </div>
           </div>
         </div>
       </div>

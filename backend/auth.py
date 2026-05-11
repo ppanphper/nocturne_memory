@@ -124,10 +124,73 @@ class BearerTokenAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+def get_cors_config() -> dict:
+    """Return kwargs for CORSMiddleware based on CORS_ORIGINS env var.
+
+    - Unset / empty  → regex that matches localhost / 127.0.0.1 on any port
+    - "*"            → allow all origins
+    - Comma-list     → exact-match those origins
+    """
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if raw == "*":
+        return {"allow_origins": ["*"]}
+    if raw:
+        return {"allow_origins": [o.strip() for o in raw.split(",") if o.strip()]}
+    return {"allow_origin_regex": r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"}
+
+
+def enforce_network_auth(*, host: str = "0.0.0.0") -> None:
+    """Refuse to start an HTTP/SSE server without API_TOKEN.
+
+    Raises RuntimeError when API_TOKEN is empty/unset. Call this before
+    uvicorn.run() in any network-facing entry point (run_sse.py, main.py).
+    """
+    token = get_api_token()
+    if token and len(token) < 32:
+        raise RuntimeError(
+            f"API_TOKEN is too short ({len(token)} chars). "
+            f"Use at least 32 characters for security."
+        )
+    if token:
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            print(
+                f"  Auth enabled (HOST={host}). "
+                f"MCP clients must send the header:\n"
+                f"      Authorization: Bearer <your-API_TOKEN>\n"
+                f"  See README for client configuration examples.",
+            )
+        return
+    is_localhost = host in ("127.0.0.1", "localhost", "::1")
+    if is_localhost:
+        import warnings
+        warnings.warn(
+            "API_TOKEN is not set. The server is binding to localhost only, "
+            "but setting API_TOKEN is still strongly recommended.",
+            stacklevel=2,
+        )
+        return
+    raise RuntimeError(
+        f"\n\n"
+        f"  API_TOKEN is not set, but HOST={host!r} is network-reachable.\n"
+        f"\n"
+        f"  Fix: add API_TOKEN to your .env file:\n"
+        f"\n"
+        f"    python -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
+        f"\n"
+        f"  Copy the output into .env as:  API_TOKEN=<paste here>\n"
+        f"  Then update your MCP client config to include:\n"
+        f"      \"headers\": {{\"Authorization\": \"Bearer <your-API_TOKEN>\"}}\n"
+        f"\n"
+        f"  Or set HOST=127.0.0.1 to only allow local connections.\n"
+    )
+
+
 __all__ = [
     "BearerTokenAuthMiddleware",
     "UNAUTHORIZED_MESSAGE",
+    "enforce_network_auth",
     "get_api_token",
+    "get_cors_config",
     "is_excluded_path",
     "verify_token",
 ]

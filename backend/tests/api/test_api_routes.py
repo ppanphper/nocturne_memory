@@ -73,6 +73,174 @@ async def test_review_group_diff_and_rollback(api_client, graph_service, mcp_mod
     assert current["content"] == "Original review content"
 
 
+async def test_review_existing_memory_consecutive_updates_are_modified_and_rollback(
+    api_client, graph_service, mcp_module
+):
+    created = await mcp_module.create_memory(
+        "core://",
+        "Original version",
+        2,
+        title="review_consecutive_update",
+        disclosure="When first reviewing",
+    )
+    assert "Success" in created
+
+    initial_groups = await api_client.get("/review/groups")
+    assert initial_groups.status_code == 200
+    initial_group = initial_groups.json()[0]
+    assert initial_group["top_level_table"] == "nodes"
+    assert initial_group["action"] == "created"
+
+    approved = await api_client.delete(f"/review/groups/{initial_group['node_uuid']}")
+    assert approved.status_code == 200
+    assert (await api_client.get("/review/groups")).json() == []
+
+    first = await mcp_module.update_memory(
+        "core://review_consecutive_update",
+        old_string="Original version",
+        new_string="Middle version",
+        disclosure="When reviewing middle",
+    )
+    assert "Success" in first
+
+    second = await mcp_module.update_memory(
+        "core://review_consecutive_update",
+        old_string="Middle version",
+        new_string="Final version",
+        disclosure="When reviewing final",
+    )
+    assert "Success" in second
+
+    groups = await api_client.get("/review/groups")
+    assert groups.status_code == 200
+    group = groups.json()[0]
+
+    assert group["top_level_table"] == "memories"
+    assert group["action"] == "modified"
+
+    diff = await api_client.get(f"/review/groups/{group['node_uuid']}/diff")
+    assert diff.status_code == 200
+    payload = diff.json()
+
+    assert payload["action"] == "modified"
+    assert payload["before_content"] == "Original version"
+    assert payload["current_content"] == "Final version"
+    assert payload["before_meta"]["disclosure"] == "When first reviewing"
+    assert payload["current_meta"]["disclosure"] == "When reviewing final"
+
+    rollback = await api_client.post(f"/review/groups/{group['node_uuid']}/rollback")
+    assert rollback.status_code == 200
+    assert rollback.json()["success"] is True
+
+    current = await graph_service.get_memory_by_path("review_consecutive_update", "core")
+    groups_after = await api_client.get("/review/groups")
+
+    assert current["content"] == "Original version"
+    assert current["disclosure"] == "When first reviewing"
+    assert groups_after.json() == []
+
+
+async def test_review_rollback_fails_if_previous_memory_version_was_purged(
+    api_client, graph_service, mcp_module
+):
+    created = await graph_service.create_memory(
+        parent_path="",
+        content="Rollback source version",
+        priority=2,
+        title="review_missing_old_version",
+        disclosure="When old version exists",
+    )
+
+    updated = await mcp_module.update_memory(
+        "core://review_missing_old_version",
+        old_string="Rollback source version",
+        new_string="Updated version",
+    )
+    assert "Success" in updated
+
+    await graph_service.permanently_delete_memory(created["id"])
+
+    groups = await api_client.get("/review/groups")
+    assert groups.status_code == 200
+    group = groups.json()[0]
+
+    rollback = await api_client.post(f"/review/groups/{group['node_uuid']}/rollback")
+    payload = rollback.json()
+
+    current = await graph_service.get_memory_by_path("review_missing_old_version", "core")
+    groups_after = await api_client.get("/review/groups")
+
+    assert rollback.status_code == 200
+    assert payload["success"] is False
+    assert "Cannot restore previous memory content" in payload["message"]
+    assert current["content"] == "Updated version"
+    assert groups_after.json() != []
+
+
+async def test_review_rollback_restores_path_even_if_node_is_live_in_other_namespace(
+    api_client, graph_service, mcp_module
+):
+    from sqlalchemy import select
+
+    from db import get_db_manager
+    from db.models import Path
+    created = await graph_service.create_memory(
+        parent_path="",
+        content="Shared across namespaces",
+        priority=2,
+        title="shared_review_item",
+        disclosure="When reviewing shared node rollback",
+        namespace="ns_a",
+    )
+
+    db = get_db_manager()
+    async with db.session() as session:
+        path_row = (
+            await session.execute(
+                select(Path).where(
+                    Path.namespace == "ns_a",
+                    Path.domain == "core",
+                    Path.path == "shared_review_item",
+                )
+            )
+        ).scalar_one()
+        session.add(
+            Path(
+                namespace="ns_b",
+                domain="core",
+                path="shared_review_item",
+                edge_id=path_row.edge_id,
+            )
+        )
+
+    from db.namespace import set_namespace
+
+    set_namespace("ns_a")
+    deleted = await mcp_module.delete_memory("core://shared_review_item")
+    assert "Success" in deleted
+
+    groups = await api_client.get("/review/groups")
+    group = next(
+        g for g in groups.json() if g["node_uuid"] == created["node_uuid"]
+    )
+
+    rollback = await api_client.post(f"/review/groups/{group['node_uuid']}/rollback")
+    assert rollback.status_code == 200
+    assert rollback.json()["success"] is True
+
+    restored = await graph_service.get_memory_by_path(
+        "shared_review_item", "core", namespace="ns_a"
+    )
+    still_live_elsewhere = await graph_service.get_memory_by_path(
+        "shared_review_item", "core", namespace="ns_b"
+    )
+
+    assert restored is not None
+    assert restored["node_uuid"] == created["node_uuid"]
+    assert still_live_elsewhere is not None
+    assert still_live_elsewhere["node_uuid"] == created["node_uuid"]
+
+
 async def test_review_diff_includes_path_and_glossary_changes(api_client, graph_service, mcp_module):
     await graph_service.create_memory(
         parent_path="",
@@ -128,7 +296,7 @@ async def test_maintenance_lists_deprecated_and_orphaned_memories(api_client, gr
 
 
 async def test_api_requires_bearer_token_when_configured(reload_module, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "secret-token")
+    monkeypatch.setenv("API_TOKEN", "secret-token-that-is-at-least-32-chars-long")
 
     from db import get_db_manager
 
@@ -140,7 +308,7 @@ async def test_api_requires_bearer_token_when_configured(reload_module, monkeypa
         unauthorized = await client.get("/browse/domains")
         authorized = await client.get(
             "/browse/domains",
-            headers={"Authorization": "Bearer secret-token"},
+            headers={"Authorization": "Bearer secret-token-that-is-at-least-32-chars-long"},
         )
 
     assert unauthorized.status_code == 401

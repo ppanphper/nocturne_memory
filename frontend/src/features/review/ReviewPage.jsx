@@ -42,8 +42,10 @@ function ReviewPage() {
         setSelectedChange(null);
         setDiffData(null);
       }
+      return list;
     } catch {
       setDiffError("Disconnected from Neural Core (Backend offline).");
+      return [];
     } finally {
       setLoading(false);
     }
@@ -78,7 +80,10 @@ function ReviewPage() {
       if (res && res.success === false) {
         throw new Error(res.message || "Unknown error during rollback");
       }
-      await loadChanges();
+      const list = await loadChanges();
+      if (list.find(c => c.node_uuid === selectedChange.node_uuid)) {
+        await loadDiff(selectedChange.node_uuid);
+      }
     } catch (err) {
       const errorMsg = err.response?.data?.detail || err.message;
       alert("Rejection failed: " + errorMsg);

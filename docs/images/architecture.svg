@@ -41,26 +41,47 @@
 
 
   <!-- === LEFT: AI INTERFACE (MCP) === -->
-  <g transform="translate(70, 150)">
-    <rect x="0" y="0" width="160" height="120" rx="8" fill="#1e293b" stroke="#60a5fa" stroke-width="2" filter="url(#glow-ai)"/>
-    <text x="80" y="30" font-family="Arial, sans-serif" font-size="16" fill="#60a5fa" text-anchor="middle" font-weight="bold">AI Agent</text>
-    <text x="80" y="50" font-family="Arial, sans-serif" font-size="12" fill="#bfdbfe" text-anchor="middle">Context Window</text>
+  <!-- Agent 1 (e.g. Alice) -->
+  <g transform="translate(70, 70)">
+    <rect x="0" y="0" width="160" height="65" rx="8" fill="#1e293b" stroke="#60a5fa" stroke-width="1.5" opacity="0.6"/>
+    <text x="80" y="28" font-family="Arial, sans-serif" font-size="13" fill="#60a5fa" text-anchor="middle" font-weight="bold">AI Agent (Alice)</text>
+    <text x="80" y="48" font-family="Arial, sans-serif" font-size="10" fill="#93c5fd" text-anchor="middle">Namespace: alice</text>
+  </g>
+
+  <!-- Agent 2 (Main Focus) -->
+  <g transform="translate(70, 160)">
+    <rect x="0" y="0" width="160" height="100" rx="8" fill="#1e293b" stroke="#60a5fa" stroke-width="2" filter="url(#glow-ai)"/>
+    <text x="80" y="28" font-family="Arial, sans-serif" font-size="15" fill="#60a5fa" text-anchor="middle" font-weight="bold">AI Agent (Nocturne)</text>
+    <text x="80" y="46" font-family="Arial, sans-serif" font-size="11" fill="#bfdbfe" text-anchor="middle">Namespace Isolation</text>
     
-    <line x1="10" y1="70" x2="150" y2="70" stroke="#334155" stroke-width="1"/>
+    <line x1="10" y1="60" x2="150" y2="60" stroke="#334155" stroke-width="1"/>
     
-    <text x="80" y="90" font-family="Arial, sans-serif" font-size="11" fill="#93c5fd" text-anchor="middle">MCP Client</text>
-    <text x="80" y="105" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">(Cursor/Claude/etc)</text>
+    <text x="80" y="78" font-family="Arial, sans-serif" font-size="11" fill="#93c5fd" text-anchor="middle">MCP Client</text>
+  </g>
+
+  <!-- Agent 3 (e.g. Bob) -->
+  <g transform="translate(70, 290)">
+    <rect x="0" y="0" width="160" height="65" rx="8" fill="#1e293b" stroke="#60a5fa" stroke-width="1.5" opacity="0.6"/>
+    <text x="80" y="28" font-family="Arial, sans-serif" font-size="13" fill="#60a5fa" text-anchor="middle" font-weight="bold">AI Agent (Bob)</text>
+    <text x="80" y="48" font-family="Arial, sans-serif" font-size="10" fill="#93c5fd" text-anchor="middle">Namespace: bob</text>
   </g>
 
   <!-- Connection: AI <-> DB -->
   <g>
+    <!-- Connections for Agent 1 -->
+    <path d="M 230 102 C 290 102, 290 190, 345 190" stroke="#60a5fa" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-ai)" fill="none" stroke-dasharray="3,3"/>
+    
+    <!-- Connections for Agent 2 -->
     <!-- Read path -->
-    <path d="M 230 190 L 350 190" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)" stroke-dasharray="5,3"/>
-    <text x="290" y="180" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">read_memory</text>
+    <path d="M 230 190 L 345 190" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)" stroke-dasharray="5,3" fill="none"/>
+    <text x="290" y="182" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">read_memory</text>
     
     <!-- Write path -->
-    <path d="M 230 230 L 350 230" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)"/>
-    <text x="290" y="250" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">create / update</text>
+    <path d="M 230 230 L 345 230" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow-ai)" fill="none"/>
+    <text x="290" y="222" font-family="Arial, sans-serif" font-size="11" fill="#60a5fa" text-anchor="middle">create / update</text>
+
+    <!-- Connections for Agent 3 -->
+    <path d="M 230 322 C 290 322, 290 230, 345 230" stroke="#60a5fa" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-ai)" fill="none" stroke-dasharray="3,3"/>
   </g>
 
 
@@ -90,10 +111,10 @@
   </g>
 
   <!-- === BOTTOM: BACKEND === -->
-  <g transform="translate(0, 350)">
+  <g transform="translate(0, 380)">
     <text x="400" y="0" font-family="Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Backend API (FastAPI)</text>
-    <line x1="350" y1="-50" x2="330" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
-    <line x1="450" y1="-50" x2="470" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
+    <line x1="350" y1="-80" x2="330" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
+    <line x1="450" y1="-80" x2="470" y2="-20" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>
   </g>
 
 </svg>

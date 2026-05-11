@@ -729,8 +729,11 @@ async def rollback_group(node_uuid: str):
                             # When admin does a rollback, it rebuilds FTS docs for ALL namespaces
                             await graph.rollback_to_memory(old_active_mem_id, session=session)
                             messages.append(f"Restored previous memory content ({old_active_mem_id}).")
-                        except ValueError:
-                            pass
+                        except ValueError as exc:
+                            raise RuntimeError(
+                                "Cannot restore previous memory content from "
+                                f"snapshot target {old_active_mem_id}: {exc}"
+                            ) from exc
 
                 # 5. Revert Glossary Keywords
                 for r in rows:
@@ -740,7 +743,8 @@ async def rollback_group(node_uuid: str):
                             await session.execute(
                                 delete(GlossaryKeyword).where(
                                     GlossaryKeyword.keyword == r["after"]["keyword"],
-                                    GlossaryKeyword.node_uuid == r["after"]["node_uuid"]
+                                    GlossaryKeyword.node_uuid == r["after"]["node_uuid"],
+                                    GlossaryKeyword.namespace == r["after"].get("namespace", "")
                                 )
                             )
                             messages.append(f"Reverted glossary keyword addition ('{r['after']['keyword']}').")
@@ -761,7 +765,8 @@ async def rollback_group(node_uuid: str):
                             existing = (await session.execute(
                                 select(GlossaryKeyword).where(
                                     GlossaryKeyword.keyword == b["keyword"],
-                                    GlossaryKeyword.node_uuid == b["node_uuid"]
+                                    GlossaryKeyword.node_uuid == b["node_uuid"],
+                                    GlossaryKeyword.namespace == b.get("namespace", "")
                                 )
                             )).scalar_one_or_none()
                             
@@ -769,6 +774,7 @@ async def rollback_group(node_uuid: str):
                                 entry = GlossaryKeyword(
                                     keyword=b["keyword"],
                                     node_uuid=b["node_uuid"],
+                                    namespace=b.get("namespace", "")
                                 )
                                 session.add(entry)
                                 messages.append(f"Restored glossary keyword ('{b['keyword']}').")

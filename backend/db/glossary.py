@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 
 from .models import (
     Node,
-    Edge,
     Path,
     Memory,
     GlossaryKeyword,
@@ -56,7 +55,7 @@ class GlossaryService:
             if not node:
                 raise ValueError(f"Node '{node_uuid}' not found")
 
-            entry = GlossaryKeyword(keyword=keyword, node_uuid=node_uuid)
+            entry = GlossaryKeyword(keyword=keyword, node_uuid=node_uuid, namespace=namespace)
             session.add(entry)
 
             try:
@@ -88,6 +87,7 @@ class GlossaryService:
                 select(GlossaryKeyword).where(
                     GlossaryKeyword.keyword == keyword,
                     GlossaryKeyword.node_uuid == node_uuid,
+                    GlossaryKeyword.namespace == namespace,
                 )
             )
             entry = existing.scalar_one_or_none()
@@ -116,12 +116,15 @@ class GlossaryService:
                 "rows_after": {"glossary_keywords": []},
             }
 
-    async def get_glossary_for_node(self, node_uuid: str) -> List[str]:
+    async def get_glossary_for_node(self, node_uuid: str, namespace: str = "") -> List[str]:
         """Get all keywords bound to a node."""
         async with self._session() as session:
             result = await session.execute(
                 select(GlossaryKeyword.keyword)
-                .where(GlossaryKeyword.node_uuid == node_uuid)
+                .where(
+                    GlossaryKeyword.node_uuid == node_uuid,
+                    GlossaryKeyword.namespace == namespace
+                )
                 .order_by(GlossaryKeyword.keyword)
             )
             return [row[0] for row in result.all()]
@@ -133,36 +136,32 @@ class GlossaryService:
                 select(
                     GlossaryKeyword.keyword,
                     GlossaryKeyword.node_uuid,
-                    Path.namespace,
+                    GlossaryKeyword.namespace,
                     Path.domain,
                     Path.path,
                     Memory.content,
                 )
                 .select_from(GlossaryKeyword)
-                .join(Node, Node.uuid == GlossaryKeyword.node_uuid)
-                .join(
-                    Edge, Edge.child_uuid == Node.uuid
-                )
             )
 
             if not search_all_namespaces:
-                stmt = stmt.join(
+                stmt = stmt.outerjoin(
                     Path,
                     and_(
-                        Path.edge_id == Edge.id,
+                        Path.node_uuid == GlossaryKeyword.node_uuid,
                         Path.namespace == namespace,
                     ),
-                )
+                ).where(GlossaryKeyword.namespace == namespace)
             else:
-                stmt = stmt.join(
+                stmt = stmt.outerjoin(
                     Path,
-                    Path.edge_id == Edge.id,
+                    Path.node_uuid == GlossaryKeyword.node_uuid,
                 )
 
             stmt = stmt.outerjoin(
                 Memory,
                 and_(
-                    Memory.node_uuid == Node.uuid,
+                    Memory.node_uuid == GlossaryKeyword.node_uuid,
                     Memory.deprecated == False,
                 ),
             ).order_by(GlossaryKeyword.keyword, Path.domain, Path.path)
@@ -257,15 +256,17 @@ class GlossaryService:
                     Path.path,
                 )
                 .select_from(GlossaryKeyword)
-                .join(Edge, Edge.child_uuid == GlossaryKeyword.node_uuid)
                 .join(
                     Path,
                     and_(
-                        Path.edge_id == Edge.id,
+                        Path.node_uuid == GlossaryKeyword.node_uuid,
                         Path.namespace == namespace,
                     ),
                 )
-                .where(GlossaryKeyword.keyword.in_(found_keywords))
+                .where(
+                    GlossaryKeyword.keyword.in_(found_keywords),
+                    GlossaryKeyword.namespace == namespace
+                )
                 .order_by(GlossaryKeyword.keyword, Path.domain, Path.path)
             )
 

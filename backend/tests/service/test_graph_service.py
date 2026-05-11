@@ -81,6 +81,130 @@ async def test_remove_path_rejects_orphaning_child_nodes(graph_service):
         await graph_service.remove_path("parent", "core")
 
 
+async def test_get_children_returns_both_children_via_alias_and_canonical_paths(graph_service):
+    await graph_service.create_memory(
+        parent_path="",
+        content="Parent memory",
+        priority=1,
+        title="parent",
+        disclosure="When testing alias browse conflicts",
+    )
+    await graph_service.add_path(
+        new_path="aliasParent",
+        target_path="parent",
+        new_domain="core",
+        target_domain="core",
+        priority=1,
+        disclosure="When testing alias browse conflicts",
+    )
+    await graph_service.create_memory(
+        parent_path="parent",
+        content="Original child memory",
+        priority=2,
+        title="child",
+        disclosure="When testing alias browse conflicts",
+    )
+    await graph_service.create_memory(
+        parent_path="aliasParent",
+        content="Alias child memory",
+        priority=3,
+        title="child",
+        disclosure="When testing alias browse conflicts",
+    )
+
+    alias_parent = await graph_service.get_memory_by_path("aliasParent", "core")
+    children = await graph_service.get_children(
+        alias_parent["node_uuid"],
+        context_domain="core",
+        context_path="aliasParent",
+    )
+
+    child_paths = {child["path"] for child in children}
+
+    assert "aliasParent/child" in child_paths
+    assert "parent/child" in child_paths
+    assert len(children) == 2
+
+
+async def test_remove_path_auto_heals_children_to_surviving_alias(graph_service):
+    await graph_service.create_memory(
+        parent_path="",
+        content="Parent memory",
+        priority=1,
+        title="parent",
+        disclosure="When testing auto-heal",
+    )
+    await graph_service.add_path(
+        new_path="alias",
+        target_path="parent",
+        new_domain="core",
+        target_domain="core",
+        priority=1,
+        disclosure="When testing auto-heal",
+    )
+    await graph_service.create_memory(
+        parent_path="parent",
+        content="Child memory",
+        priority=2,
+        title="child",
+        disclosure="When testing auto-heal",
+    )
+
+    await graph_service.remove_path("parent", "core")
+
+    child = await graph_service.get_memory_by_path("alias/child", "core")
+    assert child is not None
+    assert child["content"] == "Child memory"
+
+
+async def test_remove_path_auto_heal_avoids_collision(graph_service):
+    await graph_service.create_memory(
+        parent_path="",
+        content="Parent memory",
+        priority=1,
+        title="parent",
+        disclosure="When testing auto-heal collision",
+    )
+    await graph_service.add_path(
+        new_path="alias",
+        target_path="parent",
+        new_domain="core",
+        target_domain="core",
+        priority=1,
+        disclosure="When testing auto-heal collision",
+    )
+    await graph_service.create_memory(
+        parent_path="parent",
+        content="Original child",
+        priority=2,
+        title="child",
+        disclosure="When testing auto-heal collision",
+    )
+    await graph_service.create_memory(
+        parent_path="alias",
+        content="Occupying child",
+        priority=3,
+        title="child",
+        disclosure="When testing auto-heal collision",
+    )
+
+    await graph_service.remove_path("parent", "core")
+
+    occupying = await graph_service.get_memory_by_path("alias/child", "core")
+    assert occupying is not None
+    assert occupying["content"] == "Occupying child"
+
+    alias_parent = await graph_service.get_memory_by_path("alias", "core")
+    children = await graph_service.get_children(
+        alias_parent["node_uuid"],
+        context_domain="core",
+        context_path="alias",
+    )
+    child_contents = {c["content_snippet"] for c in children}
+    assert "Original child" in child_contents
+    assert "Occupying child" in child_contents
+
+
 async def test_remove_path_soft_gc_creates_orphan_memory(graph_service):
     await graph_service.create_memory(
         parent_path="",

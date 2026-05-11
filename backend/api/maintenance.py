@@ -1,5 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from db import get_graph_service
+from db.models import MemoryAccessLog
+from db.namespace import get_namespace
+from sqlalchemy import select, func, delete
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/maintenance", tags=["maintenance"])
 
@@ -48,3 +54,50 @@ async def delete_orphan(memory_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/access-logs/stats")
+async def get_access_log_stats():
+    """
+    Get stats for access logs (total count, oldest record date) for the current namespace.
+    """
+    graph = get_graph_service()
+    
+    async with graph.session() as session:
+        ns = get_namespace()
+        count = await session.scalar(
+            select(func.count(MemoryAccessLog.id))
+            .where(MemoryAccessLog.namespace == ns)
+        )
+        oldest = await session.scalar(
+            select(func.min(MemoryAccessLog.accessed_at))
+            .where(MemoryAccessLog.namespace == ns)
+        )
+        
+    return {
+        "count": count or 0,
+        "oldest": oldest.isoformat() if oldest else None
+    }
+
+
+class ClearLogsRequest(BaseModel):
+    keep_days: Optional[int] = None
+
+@router.delete("/access-logs")
+async def clear_access_logs(req: ClearLogsRequest):
+    """
+    Clear access logs. If keep_days is provided, deletes logs older than X days.
+    If keep_days is 0 or None, deletes all logs.
+    """
+    graph = get_graph_service()
+    
+    async with graph.session() as session:
+        ns = get_namespace()
+        stmt = delete(MemoryAccessLog).where(MemoryAccessLog.namespace == ns)
+        
+        if req.keep_days and req.keep_days > 0:
+            cutoff = datetime.now() - timedelta(days=req.keep_days)
+            stmt = stmt.where(MemoryAccessLog.accessed_at < cutoff)
+            
+        result = await session.execute(stmt)
+        return {"deleted": result.rowcount}

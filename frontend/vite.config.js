@@ -9,7 +9,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         // 避免 Windows 下优先解析 ::1 导致 IPv6 拒绝连接
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8233',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       }

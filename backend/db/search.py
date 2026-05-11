@@ -111,7 +111,7 @@ class SearchIndexer:
             select(Path.namespace, Path.domain, Path.path, Edge.priority, Edge.disclosure)
             .select_from(Path)
             .join(Edge, Path.edge_id == Edge.id)
-            .where(Edge.child_uuid == node_uuid)
+            .where(Path.node_uuid == node_uuid)
         )
         if not search_all_namespaces:
             path_stmt = path_stmt.where(Path.namespace == namespace)
@@ -120,16 +120,25 @@ class SearchIndexer:
         if not path_rows:
             return []
 
-        keyword_rows = await session.execute(
-            select(GlossaryKeyword.keyword)
-            .where(GlossaryKeyword.node_uuid == node_uuid)
-            .order_by(GlossaryKeyword.keyword)
+        keyword_stmt = select(GlossaryKeyword.keyword, GlossaryKeyword.namespace).where(
+            GlossaryKeyword.node_uuid == node_uuid
         )
-        glossary_text = " ".join(row[0] for row in keyword_rows if row[0])
+        if not search_all_namespaces:
+            keyword_stmt = keyword_stmt.where(GlossaryKeyword.namespace == namespace)
+
+        keyword_rows = await session.execute(keyword_stmt)
+        
+        from collections import defaultdict
+        keywords_by_ns = defaultdict(list)
+        for kw, ns in keyword_rows:
+            if kw:
+                keywords_by_ns[ns].append(kw)
 
         documents = []
         for row in path_rows:
             uri = f"{row.domain}://{row.path}"
+            ns_keywords = keywords_by_ns.get(row.namespace, [])
+            glossary_text = " ".join(sorted(ns_keywords))
             documents.append(
                 {
                     "namespace": row.namespace,
@@ -231,9 +240,7 @@ class SearchIndexer:
         """Collect unique node UUIDs for a path and all descendants."""
         safe = escape_like_literal(base_path)
         result = await session.execute(
-            select(Edge.child_uuid)
-            .select_from(Path)
-            .join(Edge, Path.edge_id == Edge.id)
+            select(Path.node_uuid)
             .where(Path.namespace == namespace)
             .where(Path.domain == domain)
             .where(
@@ -257,10 +264,7 @@ class SearchIndexer:
             await session.execute(delete(SearchDocument))
 
             result = await session.execute(
-                select(Edge.child_uuid)
-                .select_from(Path)
-                .join(Edge, Path.edge_id == Edge.id)
-                .distinct()
+                select(Path.node_uuid).distinct()
             )
             for (node_uuid,) in result.all():
                 documents = await self._build_search_documents_for_node(

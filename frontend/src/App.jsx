@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
-import { ShieldCheck, Database, LayoutGrid, Sparkles, Layers, AlertCircle } from 'lucide-react';
+import { ShieldCheck, Database, LayoutGrid, Sparkles, AlertCircle, Layers } from 'lucide-react';
 import clsx from 'clsx';
 
 import ReviewPage from './features/review/ReviewPage';
@@ -89,6 +89,9 @@ function NamespaceSelector() {
           {knownNamespaces.map(ns => (
             <option key={ns} value={ns}>{ns}</option>
           ))}
+          {selected && !knownNamespaces.includes(selected) && (
+            <option key={selected} value={selected}>{selected}</option>
+          )}
           <option value="__custom__">+ enter custom…</option>
         </select>
       )}
