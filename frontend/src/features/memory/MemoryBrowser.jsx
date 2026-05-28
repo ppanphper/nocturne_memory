@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { 
   Folder, 
@@ -8,18 +8,49 @@ import {
   Cpu, 
   Hash, 
   AlertTriangle,
-  Link2,
   Star,
-  Zap
+  Zap,
+  Trash2,
+  Search,
+  FileText,
+  Loader2,
+  Plus,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { api, getBootUris, toggleBootUri } from '../../lib/api';
+import { api, getSettingsBootUris, toggleSettingsBootUri, deleteNode, searchMemories, createMemory } from '../../lib/api';
+import { toast } from '../../components/Toast';
+import { useLocale } from '../../i18n/useLocale';
+import { renameNode } from '../../lib/api';
+import CreateMemoryModal from './components/CreateMemoryModal';
+import AliasManager from './components/AliasManager';
 import PriorityBadge from './components/PriorityBadge';
 import GlossaryHighlighter from './components/GlossaryHighlighter';
 import KeywordManager from './components/KeywordManager';
 import DomainNode from './components/MemorySidebar';
 import Breadcrumb from './components/Breadcrumb';
 import NodeGridCard from './components/NodeGridCard';
+
+const NAMESPACE_SWITCH_ROOT_REDIRECT_KEY = 'nocturne:namespace-switch-root-redirect';
+const NAMESPACE_SWITCH_REDIRECT_TTL_MS = 30_000;
+
+const consumeNamespaceSwitchRedirect = () => {
+  const raw = sessionStorage.getItem(NAMESPACE_SWITCH_ROOT_REDIRECT_KEY);
+  if (!raw) return false;
+
+  sessionStorage.removeItem(NAMESPACE_SWITCH_ROOT_REDIRECT_KEY);
+
+  try {
+    const payload = JSON.parse(raw);
+    return Date.now() - Number(payload?.at) < NAMESPACE_SWITCH_REDIRECT_TTL_MS;
+  } catch {
+    return false;
+  }
+};
+
+const chooseRootDomain = (domains, currentDomain) => {
+  if (domains.some(item => item.domain === currentDomain)) return currentDomain;
+  return domains[0]?.domain || null;
+};
 
 export default function MemoryBrowser() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -32,11 +63,27 @@ export default function MemoryBrowser() {
   const [domains, setDomains] = useState([]);
   
   const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editDisclosure, setEditDisclosure] = useState('');
   const [editPriority, setEditPriority] = useState(0);
   const [saving, setSaving] = useState(false);
   const [bootUris, setBootUris] = useState([]);
+
+  // Delete
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Create Memory
+  const [showCreateModal, setShowCreateModal] = useState(false);
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const searchTimeoutRef = useRef(null);
+  const searchSeqRef = useRef(0);
+  const { t } = useLocale();
 
   const currentRouteRef = useRef({ domain, path });
   useEffect(() => {
@@ -44,8 +91,8 @@ export default function MemoryBrowser() {
   }, [domain, path]);
 
   useEffect(() => {
-    api.get('/browse/domains').then(res => setDomains(res.data)).catch(() => {});
-    getBootUris().then(setBootUris).catch(() => {});
+    api.get('/browse/domains').then(res => setDomains(Array.isArray(res.data) ? res.data : [])).catch(() => {});
+    getSettingsBootUris().then(res => setBootUris(res.uris)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -54,11 +101,23 @@ export default function MemoryBrowser() {
       setError(null);
       setEditing(false);
       try {
+        const shouldRedirectAfterNamespaceSwitch = consumeNamespaceSwitchRedirect();
+        if (shouldRedirectAfterNamespaceSwitch) {
+          const domainsRes = await api.get('/browse/domains');
+          const rootDomain = chooseRootDomain(domainsRes.data, domain);
+          setDomains(Array.isArray(domainsRes.data) ? domainsRes.data : []);
+          if (rootDomain && (path || rootDomain !== domain)) {
+            setSearchParams({ domain: rootDomain }, { replace: true });
+            return;
+          }
+        }
+
         const res = await api.get('/browse/node', { params: { domain, path } });
-        setData(res.data);
+        setData({ node: null, children: [], breadcrumbs: [], ...(res.data || {}) });
         setEditContent(res.data.node?.content || '');
         setEditDisclosure(res.data.node?.disclosure || '');
         setEditPriority(res.data.node?.priority ?? 0);
+        setEditTitle(res.data.node?.name || '');
       } catch (err) {
         setError(err.response?.data?.detail || err.message);
       } finally {
@@ -88,6 +147,7 @@ export default function MemoryBrowser() {
   };
 
   const startEditing = () => {
+    setEditTitle(data.node?.name || '');
     setEditContent(data.node?.content || '');
     setEditDisclosure(data.node?.disclosure || '');
     setEditPriority(data.node?.priority ?? 0);
@@ -96,6 +156,7 @@ export default function MemoryBrowser() {
 
   const cancelEditing = () => {
     setEditing(false);
+    setEditTitle(data.node?.name || '');
     setEditContent(data.node?.content || '');
     setEditDisclosure(data.node?.disclosure || '');
     setEditPriority(data.node?.priority ?? 0);
@@ -104,21 +165,36 @@ export default function MemoryBrowser() {
   const handleSave = async () => {
     setSaving(true);
     try {
+      const titleChanged = editTitle !== (data.node?.name || '');
       const payload = {};
       if (editContent !== (data.node?.content || '')) payload.content = editContent;
       if (editPriority !== (data.node?.priority ?? 0)) payload.priority = editPriority;
       if (editDisclosure !== (data.node?.disclosure || '')) payload.disclosure = editDisclosure;
-      
-      if (Object.keys(payload).length === 0) {
+
+      if (titleChanged) {
+        const renameResult = await renameNode({
+          path,
+          new_name: editTitle.trim(),
+          domain,
+        });
+        if (Object.keys(payload).length > 0) {
+          await api.put('/browse/node', payload, {
+            params: { domain, path: renameResult.new_path },
+          });
+        }
+        navigateTo(renameResult.new_path, domain);
+      } else {
+        if (Object.keys(payload).length === 0) {
+          setEditing(false);
+          setSaving(false);
+          return;
+        }
+        await api.put('/browse/node', payload, { params: { domain, path } });
+        await refreshData();
         setEditing(false);
-        return;
       }
-      
-      await api.put('/browse/node', payload, { params: { domain, path } });
-      await refreshData();
-      setEditing(false);
     } catch (err) {
-      alert('Save failed: ' + err.message);
+      toast(t('memory.toast.save_failed', { error: err.message }), "error");
     } finally {
       setSaving(false);
     }
@@ -127,11 +203,65 @@ export default function MemoryBrowser() {
   const handleBootToggle = async (uri) => {
     const isCurrentlyInBoot = bootUris.includes(uri);
     try {
-      const result = await toggleBootUri(uri, !isCurrentlyInBoot);
+      const result = await toggleSettingsBootUri(uri, !isCurrentlyInBoot);
       setBootUris(result.uris);
     } catch (err) {
       console.error('Failed to toggle boot URI:', err);
     }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteNode(deleteTarget.domain, deleteTarget.path);
+      setDeleteTarget(null);
+      const parentPath = deleteTarget.path.includes('/') ? deleteTarget.path.substring(0, deleteTarget.path.lastIndexOf('/')) : '';
+      navigateTo(parentPath, deleteTarget.domain);
+    } catch (err) {
+      toast(t('memory.toast.delete_failed', { error: err.response?.data?.detail || err.message }), "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleCreateMemory = async () => {
+    setShowCreateModal(false);
+    await refreshData();
+  };
+
+  const handleSearch = useCallback((query) => {
+    setSearchQuery(query);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (!query.trim()) {
+      searchSeqRef.current++;
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    setSearchResults(null);
+    const seq = ++searchSeqRef.current;
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await searchMemories(query.trim());
+        if (seq !== searchSeqRef.current) return;
+        setSearchResults(Array.isArray(res.results) ? res.results : []);
+      } catch {
+        if (seq !== searchSeqRef.current) return;
+        setSearchResults([]);
+      } finally {
+        if (seq === searchSeqRef.current) setSearching(false);
+      }
+    }, 300);
+  }, []);
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    setSearchResults(null);
+    setSearching(false);
+    searchSeqRef.current++;
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
   };
 
   const isRoot = !path;
@@ -146,14 +276,14 @@ export default function MemoryBrowser() {
         <div className="p-5 border-b border-slate-800/30">
           <div className="flex items-center gap-2 text-indigo-400 mb-1">
             <Cpu size={18} />
-            <h1 className="font-bold tracking-tight text-sm text-slate-100">Memory Core</h1>
+            <h1 className="font-bold tracking-tight text-sm text-slate-100">{t('memory.sidebar.title')}</h1>
           </div>
-          <p className="text-[10px] text-slate-600 pl-6 uppercase tracking-wider">Neural Explorer v2.0</p>
+          <p className="text-[10px] text-slate-600 pl-6 uppercase tracking-wider">{t('memory.sidebar.subtitle')}</p>
         </div>
         
         <div className="p-3 flex-1 overflow-y-auto custom-scrollbar">
              <div className="mb-4">
-                 <h3 className="px-3 text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">Domains</h3>
+                 <h3 className="px-3 text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">{t('memory.sidebar.domains')}</h3>
                  {domains.map(d => (
                    <DomainNode
                      key={d.domain}
@@ -179,7 +309,7 @@ export default function MemoryBrowser() {
              <div className="bg-slate-900/50 rounded p-3 border border-slate-800/50">
                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
                     <Hash size={12} />
-                    <span>Current Path</span>
+                    <span>{t('memory.sidebar.current_path')}</span>
                  </div>
                  <code className="block text-[10px] font-mono text-indigo-300/80 break-all leading-tight">
                     {domain}://{path || 'root'}
@@ -190,21 +320,80 @@ export default function MemoryBrowser() {
 
       {/* Main Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-[#05050A] relative">
-         <div className="h-14 flex-shrink-0 border-b border-slate-800/30 flex items-center px-6 bg-[#05050A]/80 backdrop-blur-md sticky top-0 z-20">
+         <div className="h-14 flex-shrink-0 border-b border-slate-800/30 flex items-center px-6 bg-[#05050A]/80 backdrop-blur-md sticky top-0 z-20 gap-4">
              <Breadcrumb items={data.breadcrumbs} onNavigate={navigateTo} />
+             <div className="ml-auto relative flex-shrink-0 w-72">
+               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
+               <input
+                 type="text"
+                 value={searchQuery}
+                 onChange={e => handleSearch(e.target.value)}
+                 placeholder={t('memory.search.placeholder')}
+                 className="w-full bg-slate-900/60 border border-slate-800/50 rounded-lg pl-9 pr-8 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+               />
+               {searchQuery && (searching
+                 ? <Loader2 size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-indigo-400 animate-spin" />
+                 : <button onClick={clearSearch} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                     <X size={14} />
+                   </button>
+               )}
+             </div>
          </div>
 
-         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+         {/* Search Results Overlay */}
+         {searchResults !== null && (
+           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+             <div className="max-w-7xl mx-auto space-y-4">
+               <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest">
+                    {searchResults.length > 0 
+                      ? t('memory.search.results', { count: searchResults.length, query: searchQuery })
+                      : t('memory.search.no_results', { query: searchQuery })}
+                  </h2>
+                 <button onClick={clearSearch} className="text-xs text-slate-600 hover:text-slate-400 transition-colors px-3 py-1 border border-slate-800 rounded hover:border-slate-700">
+                   {t('memory.search.back')}
+                 </button>
+               </div>
+               {searchResults.map((item, i) => (
+                 <button
+                   key={`${item.uri}-${i}`}
+                   onClick={() => { clearSearch(); navigateTo(item.path, item.domain); }}
+                   className="w-full flex items-start gap-4 p-4 bg-[#0A0A12] border border-slate-800/50 rounded-xl hover:border-indigo-500/30 hover:shadow-[0_0_20px_rgba(99,102,241,0.08)] transition-all text-left group"
+                 >
+                   <div className="p-2 rounded-lg bg-slate-900 text-slate-500 group-hover:text-indigo-400 group-hover:bg-indigo-900/20 transition-colors flex-shrink-0 mt-0.5">
+                     <FileText size={16} />
+                   </div>
+                   <div className="min-w-0 flex-1">
+                     <div className="flex items-center gap-2 mb-1">
+                       <span className="text-sm font-semibold text-slate-300 group-hover:text-indigo-200 transition-colors">{item.name}</span>
+                       <PriorityBadge priority={item.priority} />
+                     </div>
+                     <code className="text-[11px] font-mono text-slate-600 block mb-1.5">{item.uri}</code>
+                     {item.snippet && <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{item.snippet}</p>}
+                     {item.disclosure && (
+                       <p className="text-[11px] text-amber-500/70 mt-1.5 flex items-center gap-1">
+                         <AlertTriangle size={10} className="flex-shrink-0" />
+                         <span className="italic truncate">{item.disclosure}</span>
+                       </p>
+                     )}
+                   </div>
+                 </button>
+               ))}
+             </div>
+           </div>
+         )}
+
+         <div className={clsx("flex-1 overflow-y-auto p-6 custom-scrollbar", searchResults !== null && "hidden")}>
             {loading ? (
                 <div className="h-full flex flex-col items-center justify-center gap-4 text-slate-600">
                     <div className="w-8 h-8 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
-                    <span className="text-xs tracking-widest uppercase">Retrieving Neural Data...</span>
+                    <span className="text-xs tracking-widest uppercase">{t('memory.status.loading')}</span>
                 </div>
             ) : error ? (
                 <div className="h-full flex flex-col items-center justify-center text-rose-500 gap-4">
-                    <p className="text-lg">Access Denied / Error</p>
+                    <p className="text-lg">{t('memory.status.error')}</p>
                     <p className="text-sm opacity-60">{error}</p>
-                    <button onClick={() => navigateTo('')} className="text-xs bg-slate-800 px-4 py-2 rounded hover:text-white transition-colors">Return to Root</button>
+                    <button onClick={() => navigateTo('')} className="text-xs bg-slate-800 px-4 py-2 rounded hover:text-white transition-colors">{t('memory.status.return_root')}</button>
                 </div>
             ) : (
                 <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -214,40 +403,44 @@ export default function MemoryBrowser() {
                             <div className="flex items-start justify-between gap-4">
                                 <div className="space-y-3 min-w-0 flex-1">
                                     <div className="flex items-center gap-3 flex-wrap">
-                                        <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
+                                        {editing ? (
+                                          <input
+                                            type="text"
+                                            value={editTitle}
+                                            onChange={e => setEditTitle(e.target.value)}
+                                            className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-2xl font-bold text-slate-100 tracking-tight w-64 focus:outline-none focus:border-indigo-500/50 transition-colors font-mono"
+                                            spellCheck={false}
+                                          />
+                                        ) : (
+                                          <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
                                             {node.name || path.split('/').pop()}
-                                        </h1>
+                                          </h1>
+                                        )}
                                         <PriorityBadge priority={node.priority} size="lg" />
                                     </div>
                                     
                                     {node.disclosure && !editing && (
                                         <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-950/20 border border-amber-900/30 rounded-lg text-amber-500/80 text-xs max-w-full">
                                             <AlertTriangle size={14} className="flex-shrink-0" />
-                                            <span className="font-medium mr-1">Disclosure:</span>
+                                            <span className="font-medium mr-1">{t('memory.edit.disclosure_label')}</span>
                                             <span className="italic truncate">{node.disclosure}</span>
                                         </div>
                                     )}
                                     
-                                    {node.aliases && node.aliases.length > 0 && !editing && (
-                                        <div className="flex items-start gap-2 text-xs text-slate-500">
-                                            <Link2 size={13} className="flex-shrink-0 mt-0.5 text-slate-600" />
-                                            <div className="flex flex-wrap gap-1.5">
-                                                <span className="text-slate-600 font-medium">Also reachable via:</span>
-                                                {node.aliases.map(alias => (
-                                                    <code key={alias} className="px-1.5 py-0.5 bg-slate-800/60 rounded text-indigo-400/70 font-mono text-[11px]">
-                                                        {alias}
-                                                    </code>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
                                     {!editing && !node.is_virtual && (
-                                        <KeywordManager
-                                          keywords={node.glossary_keywords || []}
-                                          nodeUuid={node.node_uuid}
-                                          onUpdate={refreshData}
-                                        />
+                                        <>
+                                          <AliasManager
+                                            aliases={node.aliases || []}
+                                            currentDomain={domain}
+                                            currentPath={path}
+                                            onUpdate={refreshData}
+                                          />
+                                          <KeywordManager
+                                            keywords={node.glossary_keywords || []}
+                                            nodeUuid={node.node_uuid}
+                                            onUpdate={refreshData}
+                                          />
+                                        </>
                                     )}
                                 </div>
                                 
@@ -255,29 +448,47 @@ export default function MemoryBrowser() {
                                     {!editing && (
                                         <button
                                             onClick={() => handleBootToggle(currentUri)}
-                                            title={bootUris.includes(currentUri) ? "Remove from Boot" : "Add to Boot"}
+                                            title={bootUris.includes(currentUri) ? t('memory.boot.remove') : t('memory.boot.add')}
                                             className={clsx(
-                                                "flex items-center gap-2 px-3 py-2 rounded text-sm font-medium transition-all border",
+                                                "flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-all border",
                                                 bootUris.includes(currentUri)
                                                     ? "bg-amber-950/40 border-amber-700/50 text-amber-400 hover:bg-amber-950/60 hover:border-amber-600/60 shadow-[0_0_12px_rgba(245,158,11,0.1)]"
                                                     : "bg-slate-800 border-slate-700 text-slate-500 hover:text-amber-400 hover:border-amber-800/40 hover:bg-slate-800/80"
                                             )}
                                         >
                                             <Zap size={15} className={bootUris.includes(currentUri) ? "fill-amber-400" : ""} />
-                                            Boot
+                                            {t('memory.boot.label')}
+                                        </button>
+                                    )}
+                                    {!editing && (
+                                        <button
+                                            onClick={() => setShowCreateModal(true)}
+                                            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600"
+                                        >
+                                            <Plus size={16} />
+                                            {t('memory.create.button')}
                                         </button>
                                     )}
                                     {editing ? (
                                         <>
                                             <button onClick={cancelEditing} className="p-2 hover:bg-slate-800 rounded text-slate-400 transition-colors"><X size={18} /></button>
                                             <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-medium transition-colors shadow-lg shadow-indigo-900/20">
-                                                <Save size={16} /> {saving ? 'Saving...' : 'Save Changes'}
+                                                <Save size={16} /> {saving ? t('memory.edit.saving') : t('memory.edit.save')}
                                             </button>
                                         </>
                                     ) : !node.is_virtual && (
-                                        <button onClick={startEditing} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600">
-                                            <Edit3 size={16} /> Edit
-                                        </button>
+                                        <>
+                                            <button onClick={startEditing} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600">
+                                                <Edit3 size={16} /> {t('memory.edit.edit')}
+                                            </button>
+                                            <button
+                                              onClick={() => setDeleteTarget({ domain, path })}
+                                              className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-rose-950/60 text-slate-500 hover:text-rose-400 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-rose-800/50"
+                                              title={t('memory.delete.tooltip')}
+                                            >
+                                              <Trash2 size={16} />
+                                            </button>
+                                        </>
                                     )}
                                 </div>
                             </div>
@@ -287,8 +498,8 @@ export default function MemoryBrowser() {
                                     <div className="space-y-1.5">
                                         <label className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
                                             <Star size={12} />
-                                            Priority
-                                            <span className="text-slate-600 font-normal">(lower = higher priority)</span>
+                                            {t('memory.edit.priority')}
+                                            <span className="text-slate-600 font-normal">{t('memory.edit.priority_hint')}</span>
                                         </label>
                                         <input 
                                             type="number"
@@ -301,14 +512,14 @@ export default function MemoryBrowser() {
                                     <div className="space-y-1.5">
                                         <label className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
                                             <AlertTriangle size={12} />
-                                            Disclosure
-                                            <span className="text-slate-600 font-normal">(when to recall)</span>
+                                            {t('memory.edit.disclosure')}
+                                            <span className="text-slate-600 font-normal">{t('memory.edit.disclosure_hint')}</span>
                                         </label>
                                         <input 
                                             type="text"
                                             value={editDisclosure}
                                             onChange={e => setEditDisclosure(e.target.value)}
-                                            placeholder="e.g. When I need to remember..."
+                                            placeholder={t('memory.edit.disclosure_placeholder')}
                                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 transition-colors"
                                         />
                                     </div>
@@ -347,7 +558,7 @@ export default function MemoryBrowser() {
                         <div className="space-y-4 pt-4">
                             <div className="flex items-center gap-3 text-slate-500">
                                 <h2 className="text-xs font-bold uppercase tracking-widest">
-                                    {isRoot ? "Memory Clusters" : "Sub-Nodes"}
+                                    {isRoot ? t('memory.grid.memory_clusters') : t('memory.grid.sub_nodes')}
                                 </h2>
                                 <div className="h-px flex-1 bg-slate-800/50"></div>
                                 <span className="text-xs bg-slate-800/50 px-2 py-0.5 rounded-full">{data.children.length}</span>
@@ -371,13 +582,62 @@ export default function MemoryBrowser() {
                     {!loading && !data.children?.length && !node && (
                         <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-4">
                             <Folder size={48} className="opacity-20" />
-                            <p className="text-sm">Empty Sector</p>
+                            <p className="text-sm">{t('memory.empty.empty_sector')}</p>
                         </div>
                     )}
                 </div>
             )}
          </div>
       </div>
+
+      {/* Create Memory Modal */}
+      {showCreateModal && (
+        <CreateMemoryModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={handleCreateMemory}
+          parentPath={path}
+          currentDomain={domain}
+        />
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !deleting && setDeleteTarget(null)}>
+          <div className="bg-[#0C0C14] border border-slate-800 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 rounded-lg bg-rose-950/40 text-rose-400">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-100">{t('memory.delete.title')}</h3>
+                <p className="text-xs text-slate-500 mt-0.5">{t('memory.delete.irreversible')}</p>
+              </div>
+            </div>
+            <div className="mb-5 p-3 bg-slate-900/60 border border-slate-800/50 rounded-lg">
+              <code className="text-sm font-mono text-rose-300/80 break-all">{deleteTarget.domain}://{deleteTarget.path}</code>
+            </div>
+            <p className="text-sm text-slate-400 mb-6">
+              {t('memory.delete.confirm_message')}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+              >
+                {t('memory.delete.cancel')}
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors shadow-lg shadow-rose-900/20 disabled:opacity-50"
+              >
+                {deleting ? t('memory.delete.deleting') : t('memory.delete.button')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

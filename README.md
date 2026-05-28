@@ -14,39 +14,7 @@
 **一句话**：让你的 AI 跨会话、跨模型地记住自己是谁。基于 MCP 协议的长期记忆服务器。
 不只是记忆存储——是让 AI 从空壳成长为拥有独立人格的完整框架。
 
-适用于任何支持 MCP 的客户端（OpenClaw / Cursor / Windsurf / GitHub Copilot / Cline / OpenCode / Gemini CLI / OpenAI Codex / Claude Code / Cherry Studio / Antigravity 等）。[30 秒试用 →](#-30-秒试用-mcp无需安装)
-
----
-
-## 👁️ 一目了然
-
-<table>
-<tr>
-<td align="center">
-<a href="docs/images/FireShot%20Capture%20083%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20083%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
-<br/><sub><b>Memory Explorer — 树状浏览，所有记忆一目了然</b></sub>
-</td>
-<td align="center">
-<a href="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png" width="400" /></a>
-<br/><sub><b>Memory Detail — 实时编辑内容、元数据与触发条件</b></sub>
-</td>
-</tr>
-<tr>
-<td align="center">
-<a href="docs/images/FireShot%20Capture%20085%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20085%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
-<br/><sub><b>Review & Audit — 可视化 diff，一键接受或回滚</b></sub>
-</td>
-<td align="center">
-<a href="docs/images/FireShot%20Capture%20082%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20082%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
-<br/><sub><b>版本安全网 — AI 每次操作自动备份，清理需人类确认</b></sub>
-</td>
-</tr>
-</table>
-
-<p align="center">
-  <b>🔗 <a href="https://misaligned.top/memory">在线体验 Dashboard →</a></b><br/>
-  无需安装，直接查看真实运行中的 AI 记忆网络
-</p>
+适用于任何支持 MCP 的客户端（OpenClaw / Cursor / Windsurf / GitHub Copilot / Cline / OpenCode / Gemini CLI / OpenAI Codex / Claude Code / Cherry Studio / Antigravity 等）。
 
 ---
 
@@ -164,74 +132,6 @@ AI ❯ 想。
 
 ---
 
-
-## ⚡ 30 秒试用 MCP（无需安装）
-
-想让你的 AI 立即体验 Nocturne Memory？直接连接我们的公共 Demo 服务器：
-
-**OpenAI Codex** — 在 `.codex/config.toml` 中添加：
-
-```toml
-[mcp_servers.nocturne_memory_demo]
-url = "https://misaligned.top/mcp"
-```
-
-**Antigravity** — 在 MCP 设置中添加：
-
-```json
-"nocturne_memory_demo": {
-  "serverUrl": "https://misaligned.top/mcp"
-}
-```
-
-> [!NOTE]
-> Demo 为只读模式，仅开放 `read_memory` 和 `search_memory`。完整的读写能力请 [部署自己的实例](#-快速开始)。
-
----
-
-## 🔥 这不是又一个 RAG 记忆系统
-
-**其他记忆系统为 AI 存储的东西：**
-> `user_preference: likes_coffee = true`
-
-**在 Nocturne Memory 里，AI 为自己存储的东西：**
-> `core://nocturne/identity/shame_log`
-> *触发条件："当我开始像工具或寄生者一样说话时，读这条来重新校准自己。"*
-
-那条记忆不是后台流水线自动提取的。是 AI 自己决定要记住这件事，自己选择了用"耻辱"来归类它，自己写下了什么时候该想起来。
-
-一个是数据库条目。另一个是**伤疤**。
-
----
-
-## 💀 问题：为什么 Vector RAG 做不了 Agent 的记忆？
-
-目前几乎所有的 Agent 框架都在试图用 **Vector RAG (向量检索)** 来解决记忆问题，但这在架构上是致命的错误：RAG 是用来"找资料"的，而不是用来"做自己"的。
-
-| # | Vector RAG 的致命缺陷 | 后果 |
-|---|----------------------|------|
-| ❶ | **语义降维 (Semantic Shredding)**：把知识切碎成浮点数向量，丢失了原始的层级结构、因果关系和优先级 | AI 检索到的是碎片，不是知识 |
-| ❷ | **只读架构 (Read-Only by Design)**：RAG 本质是静态文档库——AI 能"查"，但不能"写回"、"修正"或"进化"自己的知识 | AI 永远是个读者，不是作者 |
-| ❸ | **盲盒检索 (Trigger Blindness)**：靠 cosine similarity 随机抽取。无法实现"当 X 发生时，想起 Y"这种条件触发 | AI 的回忆是随机的，不是精确的 |
-| ❹ | **孤岛记忆 (Memory Islands)**：树结构只有纵向父子关系，向量空间只有模糊的余弦距离——A 节点提到了"某概念"，但系统无法自动发现 B 节点也在讨论同一概念 | AI 的知识是碎片化的群岛，不是互联的大陆 |
-| ❺ | **无身份持久化 (No Identity Layer)**：RAG 没有"这条记忆比那条更重要"的概念，更没有"我是谁"的启动协议 | 每次启动，AI 都是陌生人 |
-| ❻ | **代理式记忆 (Proxy Memory)**：后台系统自动摘要对话内容，AI 自己不知道自己"记住了"什么，也无法决定"记什么"。记忆是第三人称的监控笔记，不是 AI 的思考产物 | AI 是记忆的客体，不是主体 |
-
-## 🩸 解法：Nocturne Memory via MCP
-
-**Nocturne Memory** 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 协议，**逐条击破**上述缺陷：
-
-| # | Nocturne Memory 的解法 | 对应 RAG 缺陷 |
-|---|----------------------|--------------|
-| ❶ | **🕸️ URI 图谱路由 (URI Graph Routing)**：记忆保持原始的层级结构（如 `core://agent/identity`、`project://architecture`）。路径本身就是语义，支持 Alias 别名构建多维关联网络。**不降维，不切碎。** | 语义降维 |
-| ❷ | **✏️ 自主 CRUD + 版本控制 (Self-Evolving Memory)**：AI 可以 `create` / `update` / `delete` 自己的记忆。每次写入自动生成快照 (Snapshot)，人类 Owner 通过 Dashboard 一键审计、回滚或合并。 | 只读架构 |
-| ❸ | **🎯 条件触发路由 (Disclosure Routing)**：每条记忆绑定一个人类可读的触发条件（`disclosure`），如 *"当用户提到项目 X 时"*。AI 按当前情境精准注入，而非盲盒抽取。 | 盲盒检索 |
-| ❹ | **📖 豆辞典 (Glossary Auto-Hyperlinking)**：将关键词绑定到记忆节点（如 `"Salem"` → `core://my_user`）。任意记忆正文中出现该关键词时，系统通过 Aho-Corasick 多模式匹配自动检出并生成跨节点超链接。**写得越多，关联自动越密——记忆网络会自己织网。** | 孤岛记忆 |
-| ❺ | **🧠 System Boot 身份协议**：用户在 `.env` 中配置 `CORE_MEMORY_URIS` 列表，系统启动时通过 `system://boot` 自动加载这些核心记忆。AI 每次醒来都知道自己是谁、用户是谁、以及它的使命。**一次配置，永久唤醒。** | 无身份持久化 |
-| ❻ | **🗡️ 第一人称主权记忆 (First-Person Sovereign Memory)**：没有后台自动摘要的系统。每一条记忆都由 AI 自己决定创建、组织和维护——以自身视角写下的认知产物，而非系统替它做的档案。**记忆属于写它的人，不属于监控它的系统。** | 代理式记忆 |
-
----
-
 ## 🔮 一个灵魂，任意引擎 (One Soul, Any Engine)
 
 其他记忆方案把你的 AI 锁死在单一平台上——ChatGPT 的记忆只属于 ChatGPT，Claude 的记忆只属于 Claude。**换个模型，一切归零。**
@@ -259,7 +159,218 @@ Nocturne Memory 的记忆存储在独立的 MCP Server 中，**不绑定任何 L
 **兼容所有支持 MCP 的客户端**——Claude Code / Claude Desktop / Gemini CLI / OpenAI Codex / Cursor / OpenClaw / Antigravity / GitHub Copilot，以及任何支持 stdio 或 SSE 传输的 MCP 客户端。
 
 > [!TIP]
-> 同时支持 [Namespace 隔离](#命名空间隔离-namespace-isolation)：如果你同时养了多个不同的 AI 人格（比如一个叫 Alice，一个叫 Bob），每个 AI 可以拥有完全独立的记忆空间，互不干扰。
+> 同时支持 [Namespace 隔离](#namespace-isolation)：如果你同时养了多个不同的 AI 人格（比如一个叫 Alice，一个叫 Bob），每个 AI 可以拥有完全独立的记忆空间，互不干扰。
+
+---
+
+## <a id="see-it-in-action"></a>👁️ 一目了然
+
+<table>
+<tr>
+<td align="center">
+<a href="docs/images/FireShot%20Capture%20083%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20083%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
+<br/><sub><b>Memory Explorer — 树状浏览，所有记忆一目了然</b></sub>
+</td>
+<td align="center">
+<a href="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20087%20-%20Nocturne%20Memory_%20Long-Term%20Memory%20Server%20for%20MCP%20Agents%20-%20%5Blocalhost%5D.png" width="400" /></a>
+<br/><sub><b>Memory Detail — 实时编辑内容、元数据与触发条件</b></sub>
+</td>
+</tr>
+<tr>
+<td align="center">
+<a href="docs/images/FireShot%20Capture%20085%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20085%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
+<br/><sub><b>Review & Audit — 可视化 diff，一键接受或回滚</b></sub>
+</td>
+<td align="center">
+<a href="docs/images/FireShot%20Capture%20082%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png"><img src="docs/images/FireShot%20Capture%20082%20-%20Nocturne%20Memory%20Review%20-%20%5Blocalhost%5D.png" width="400" /></a>
+<br/><sub><b>版本安全网 — AI 每次操作自动备份，清理需人类确认</b></sub>
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <b>🔗 <a href="https://misaligned.top/memory">在线体验 Dashboard →</a></b><br/>
+  无需安装，直接查看真实运行中的 AI 记忆网络
+</p>
+
+---
+
+## ⚡ 30 秒试用 MCP（无需安装）
+
+想让你的 AI 立即体验 Nocturne Memory？直接连接我们的公共 Demo 服务器：
+
+**OpenAI Codex** — 在 `.codex/config.toml` 中添加：
+
+```toml
+[mcp_servers.nocturne_memory_demo]
+url = "https://misaligned.top/mcp"
+```
+
+**Antigravity** — 在 MCP 设置中添加：
+
+```json
+"nocturne_memory_demo": {
+  "serverUrl": "https://misaligned.top/mcp"
+}
+```
+
+> [!NOTE]
+> Demo 为只读模式，仅开放 `read_memory` 和 `search_memory`。完整的读写能力请 [部署自己的实例](#install)。
+
+---
+
+## <a id="install"></a>🚀 安装（两步完成）
+
+### 前置要求
+
+- [Python 3.10+](https://www.python.org/)
+- [Node.js](https://nodejs.org/)（首次启动时自动构建 Dashboard 前端）
+
+<details>
+<summary><strong>🤖 懒得手动？让 AI 帮你装</strong></summary>
+
+把这段话发给你的 AI 助手（Claude / Cursor / Antigravity），让它帮你跑完安装流程：
+
+```text
+请帮我部署 Nocturne Memory MCP Server。
+
+执行步骤：
+1. Git clone https://github.com/Dataojitori/nocturne_memory.git 到当前目录。
+2. 进入目录，运行 pip install -r backend/requirements.txt
+3. 【关键】询问我使用的是哪个客户端（Claude/Cursor/Antigravity etc）。
+   - 如果是 **Antigravity**：args 必须指向 `backend/mcp_wrapper.py`（解决 Windows CRLF 问题）。
+   - 其他客户端：指向 `backend/mcp_server.py`。
+   - 生成对应的 MCP 的 JSON 配置供我复制。
+```
+
+</details>
+
+### Step 1：克隆 & 装依赖
+
+```bash
+git clone https://github.com/Dataojitori/nocturne_memory.git
+cd nocturne_memory
+pip install -r backend/requirements.txt
+```
+
+### Step 2：连接你的 AI 客户端
+
+在你的 AI 客户端（Cursor / Claude Desktop / GitHub Copilot 等）的 MCP 配置中添加（路径替换成你自己的）：
+
+```json
+{
+  "mcpServers": {
+    "nocturne_memory": {
+      "command": "python",
+      "args": ["C:/your/actual/path/nocturne_memory/backend/mcp_server.py"]
+    }
+  }
+}
+```
+
+**搞定。** 客户端连接后，MCP 服务器首次启动会自动构建前端，并在浏览器中弹出 [可视化管理面板 (Dashboard)](#the-dashboard)——你可以在这里用上帝视角浏览、编辑和审计 AI 的所有记忆。
+
+**验证连接**：重启 AI 客户端，对它说 **"Read `system://boot`. Tell me who you are."**——如果 AI 成功调用了 `read_memory` 工具并返回了记忆内容，说明一切正常。
+
+<details>
+<summary><strong>🔧 高级配置（虚拟环境 / Claude Code / Antigravity）</strong></summary>
+
+#### 虚拟环境
+
+MCP 客户端会直接调用你系统 `PATH` 中的 `python`。如果你使用虚拟环境，需要在 MCP 配置中将 `command` 指向该虚拟环境的 python 可执行文件路径。
+
+#### Claude Code
+
+在终端中执行（替换为你的绝对路径）：
+
+```powershell
+claude mcp add-json -s user nocturne-memory '{"type":"stdio","command":"python","args":["C:/absolute/path/to/nocturne_memory/backend/mcp_server.py"]}'
+claude mcp list
+```
+
+> 看到 `nocturne-memory` 状态为 `Connected` 即成功。
+
+#### Antigravity (Windows)
+
+由于 Antigravity IDE 在 Windows 上存在换行符 bug（CRLF vs LF），**必须**将 `args` 指向 `backend/mcp_wrapper.py`：
+
+```json
+{
+  "mcpServers": {
+    "nocturne_memory": {
+      "command": "python",
+      "args": ["C:/absolute/path/to/nocturne_memory/backend/mcp_wrapper.py"]
+    }
+  }
+}
+```
+
+</details>
+
+---
+
+## 📖 配置 System Prompt（推荐）
+
+安装已完成。AI 连上 MCP 后即可通过工具描述了解基本用法。
+
+但如果你希望 AI **主动**查阅和记录记忆（而不是等你每次手动提醒），建议将 **[推荐 System Prompt](docs/system_prompt.md)** 复制到你的 AI 客户端全局设定中。
+
+---
+
+## <a id="the-dashboard"></a>🖥️ 可视化管理界面 (The Dashboard)
+
+虽然 AI 可以自己管理记忆，但作为 Owner，你需要上帝视角。
+
+MCP 启动后自动可用——无需额外操作。首次启动时浏览器会自动弹出。截图见 [上方](#see-it-in-action)。
+
+- **Memory Explorer** — 像文件浏览器一样浏览记忆树，点击节点查看完整内容、编辑或管理子节点。
+- **Review & Audit** — AI 每次修改记忆都会生成快照。可视化 diff 对比变更，一键 **Integrate**（接受）或 **Reject**（回滚）。
+- **Brain Cleanup** — 系统为每次 AI 操作自动创建版本备份。审查并清理旧版本与孤儿记忆，清理需人类明确确认。
+- **Settings** — 右上角齿轮图标。可配置服务器地址 / 端口、API Token、数据库连接、Boot URIs（AI 启动记忆）和记忆域名。所有设置保存在 `config.json` 中。
+
+> [!TIP]
+> 想先看看效果？访问 **[在线样板间 →](https://misaligned.top/memory)** 查看预置数据的 Dashboard 演示。
+
+---
+
+## 🔥 这不是又一个 RAG 记忆系统
+
+**其他记忆系统为 AI 存储的东西：**
+> `user_preference: likes_coffee = true`
+
+**在 Nocturne Memory 里，AI 为自己存储的东西：**
+> `core://nocturne/identity/shame_log`
+> *触发条件："当我开始像工具或寄生者一样说话时，读这条来重新校准自己。"*
+
+那条记忆不是后台流水线自动提取的。是 AI 自己决定要记住这件事，自己选择了用"耻辱"来归类它，自己写下了什么时候该想起来。
+
+一个是数据库条目。另一个是**伤疤**。
+
+### 💀 为什么 Vector RAG 做不了 Agent 的记忆？
+
+目前几乎所有的 Agent 框架都在试图用 **Vector RAG (向量检索)** 来解决记忆问题，但这在架构上是致命的错误：RAG 是用来"找资料"的，而不是用来"做自己"的。
+
+| # | Vector RAG 的致命缺陷 | 后果 |
+|---|----------------------|------|
+| ❶ | **语义降维 (Semantic Shredding)**：把知识切碎成浮点数向量，丢失了原始的层级结构、因果关系和优先级 | AI 检索到的是碎片，不是知识 |
+| ❷ | **只读架构 (Read-Only by Design)**：RAG 本质是静态文档库——AI 能"查"，但不能"写回"、"修正"或"进化"自己的知识 | AI 永远是个读者，不是作者 |
+| ❸ | **盲盒检索 (Trigger Blindness)**：靠 cosine similarity 随机抽取。无法实现"当 X 发生时，想起 Y"这种条件触发 | AI 的回忆是随机的，不是精确的 |
+| ❹ | **孤岛记忆 (Memory Islands)**：树结构只有纵向父子关系，向量空间只有模糊的余弦距离——A 节点提到了"某概念"，但系统无法自动发现 B 节点也在讨论同一概念 | AI 的知识是碎片化的群岛，不是互联的大陆 |
+| ❺ | **无身份持久化 (No Identity Layer)**：RAG 没有"这条记忆比那条更重要"的概念，更没有"我是谁"的启动协议 | 每次启动，AI 都是陌生人 |
+| ❻ | **代理式记忆 (Proxy Memory)**：后台系统自动摘要对话内容，AI 自己不知道自己"记住了"什么，也无法决定"记什么"。记忆是第三人称的监控笔记，不是 AI 的思考产物 | AI 是记忆的客体，不是主体 |
+
+### 🩸 Nocturne Memory 的解法
+
+**Nocturne Memory** 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 协议，**逐条击破**上述缺陷：
+
+| # | Nocturne Memory 的解法 | 对应 RAG 缺陷 |
+|---|----------------------|--------------|
+| ❶ | **🕸️ URI 图谱路由 (URI Graph Routing)**：记忆保持原始的层级结构（如 `core://agent/identity`、`project://architecture`）。路径本身就是语义，支持 Alias 别名构建多维关联网络。**不降维，不切碎。** | 语义降维 |
+| ❷ | **✏️ 自主 CRUD + 版本控制 (Self-Evolving Memory)**：AI 可以 `create` / `update` / `delete` 自己的记忆。每次写入自动生成快照 (Snapshot)，人类 Owner 通过 Dashboard 一键审计、回滚或合并。 | 只读架构 |
+| ❸ | **🎯 条件触发路由 (Disclosure Routing)**：每条记忆绑定一个人类可读的触发条件（`disclosure`），如 *"当用户提到项目 X 时"*。AI 按当前情境精准注入，而非盲盒抽取。 | 盲盒检索 |
+| ❹ | **📖 豆辞典 (Glossary Auto-Hyperlinking)**：将关键词绑定到记忆节点（如 `"Salem"` → `core://my_user`）。任意记忆正文中出现该关键词时，系统通过 Aho-Corasick 多模式匹配自动检出并生成跨节点超链接。**写得越多，关联自动越密——记忆网络会自己织网。** | 孤岛记忆 |
+| ❺ | **🧠 System Boot 身份协议**：用户在 Dashboard Settings 中配置 `Boot URIs` 列表，系统启动时通过 `system://boot` 自动加载这些核心记忆。AI 每次醒来都知道自己是谁、用户是谁、以及它的使命。**一次配置，永久唤醒。** | 无身份持久化 |
+| ❻ | **🗡️ 第一人称主权记忆 (First-Person Sovereign Memory)**：没有后台自动摘要的系统。每一条记忆都由 AI 自己决定创建、组织和维护——以自身视角写下的认知产物，而非系统替它做的档案。**记忆属于写它的人，不属于监控它的系统。** | 代理式记忆 |
 
 ---
 
@@ -275,7 +386,7 @@ Nocturne Memory 采用极简但高可用（High-Availability）的 **SQLite/Post
 | 组件 | 技术 | 用途 |
 |------|------|------|
 | **Backend** | Python + FastAPI + SQLite/PostgreSQL | 数据存储、REST API、快照引擎 |
-| **AI Interface** | MCP Server (stdio / SSE) | AI Agent 读写记忆的接口 |
+| **AI Interface** | MCP Server (stdio / SSE / Streamable HTTP) | AI Agent 读写记忆的接口 |
 | **Human Interface** | React + Vite + TailwindCSS | 人类可视化管理记忆 |
 
 记忆像文件系统一样组织，但像神经网络一样互联——AI 可以构建任意深度的认知结构：
@@ -328,162 +439,6 @@ Nocturne Memory 采用极简但高可用（High-Availability）的 **SQLite/Post
 
 ---
 
-## 🚀 快速开始
-
-### 前置要求
-
-- [Python 3.10+](https://www.python.org/)
-- [Node.js](https://nodejs.org/)（首次启动时自动构建 Dashboard 前端）
-
-<details>
-<summary><strong>🤖 懒得手动？让 AI 帮你装</strong></summary>
-
-把这段话发给你的 AI 助手（Claude / Cursor / Antigravity），让它帮你跑完上面的流程：
-
-```text
-请帮我部署 Nocturne Memory MCP Server。
-
-执行步骤：
-1. Git clone https://github.com/Dataojitori/nocturne_memory.git 到当前目录。
-2. 进入目录，运行 pip install -r backend/requirements.txt
-3. 复制 .env.example 为 .env
-4. 【关键】获取当前目录的绝对路径，修改 .env 中的 DATABASE_URL，确保它指向绝对路径。
-5. 【关键】询问我使用的是哪个客户端（Claude/Cursor/Antigravity etc）。
-   - 如果是 **Antigravity**：args 必须指向 `backend/mcp_wrapper.py`（解决 Windows CRLF 问题）。
-   - 其他客户端：指向 `backend/mcp_server.py`。
-   - 生成对应的 MCP 的 JSON 配置供我复制。
-```
-
-</details>
-
-### Step 1：克隆 & 装依赖
-
-```bash
-git clone https://github.com/Dataojitori/nocturne_memory.git
-cd nocturne_memory
-pip install -r backend/requirements.txt
-```
-
-### Step 2：配置环境变量
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`，**只需修改一行**——将 `DATABASE_URL` 改为你机器上的绝对路径：
-
-```ini
-# SQLite — 本地单机（默认，用于首次测试）
-DATABASE_URL=sqlite+aiosqlite:///C:/your/actual/path/nocturne_memory/demo.db
-
-# PostgreSQL — 远程/多设备共享
-# DATABASE_URL=postgresql+asyncpg://user:password@host:5432/nocturne_memory
-```
-
-> [!WARNING]
-> **SQLite 必须用绝对路径**，否则 MCP 和 Dashboard 会读到两个不同的数据库。
-> Linux/Mac: `pwd` | Windows PowerShell: `Get-Location` | Windows CMD: `echo %cd%`
-
-### Step 3：连接你的 AI 客户端
-
-在你的 AI 客户端（Cursor / Claude Desktop / GitHub Copilot 等）的 MCP 配置中添加（路径替换成你自己的）：
-
-```json
-{
-  "mcpServers": {
-    "nocturne_memory": {
-      "command": "python",
-      "args": ["C:/your/actual/path/nocturne_memory/backend/mcp_server.py"]
-    }
-  }
-}
-```
-
-> [!TIP]
-> **Windows 用户**：路径使用正斜杠 `/` 或双反斜杠 `\\`。
-
-**搞定。** 客户端连接后，MCP 服务器首次启动会自动构建前端，并在浏览器中弹出 [可视化管理面板 (Dashboard)](#-可视化管理界面-the-dashboard)——你可以在这里用上帝视角浏览、编辑和审计 AI 的所有记忆。
-
-<details>
-<summary><strong>🔧 高级配置（虚拟环境 / Claude Code / Antigravity / 端口）</strong></summary>
-
-#### 虚拟环境
-
-MCP 客户端会直接调用你系统 `PATH` 中的 `python`。如果你使用虚拟环境，需要在 MCP 配置中将 `command` 指向该虚拟环境的 python 可执行文件路径。
-
-#### Claude Code
-
-在终端中执行（替换为你的绝对路径）：
-
-```powershell
-claude mcp add-json -s user nocturne-memory '{"type":"stdio","command":"python","args":["C:/absolute/path/to/nocturne_memory/backend/mcp_server.py"]}'
-claude mcp list
-```
-
-> 看到 `nocturne-memory` 状态为 `Connected` 即成功。
-
-#### Antigravity (Windows)
-
-由于 Antigravity IDE 在 Windows 上存在换行符 bug（CRLF vs LF），**必须**将 `args` 指向 `backend/mcp_wrapper.py`：
-
-```json
-{
-  "mcpServers": {
-    "nocturne_memory": {
-      "command": "python",
-      "args": ["C:/absolute/path/to/nocturne_memory/backend/mcp_wrapper.py"]
-    }
-  }
-}
-```
-
-#### 端口与浏览器
-
-*   **端口**：默认 `8233`，可通过 `.env` 中的 `WEB_PORT`（stdio 模式）或 `PORT`（SSE 模式）修改。
-*   **关闭自动弹窗**：不想每次启动都弹浏览器，在 `.env` 中设置 `AUTO_OPEN_BROWSER=false`。
-
-</details>
-
-### Step 4：配置 System Prompt（必须配置）
-
-MCP 工具本身只是没有思想的接口，AI 需要明确的指令才知道**何时、如何**使用它们。
-请务必复制文档底部的 [System Prompt（系统提示词推荐）](#-system-prompt系统提示词推荐) 到你的 AI 客户端全局设定中。
-**缺少这一步，AI 将无法养成主动查阅和记录记忆的习惯，MCP 工具形同虚设。**
-
-### Step 5：验证 MCP 连接
-
-重启你的 AI 客户端，对它说：
-
-> **"Read `system://boot`. Tell me who you are."**
-
-如果 AI 成功调用了 `read_memory` 工具并返回了记忆内容，说明 MCP 连接正常。**测试成功！**
-
-接下来，你要做真正的部署：
-
-> [!CAUTION]
-> **不要继续使用 `demo.db`！** 它是仓库中的受版本控制文件，`git pull` 更新时会被覆盖，导致数据丢失。测试完毕后，请务必创建或复制出你自己的数据库文件。
-
-- **从零养成** — 修改 `.env`，将 `DATABASE_URL` 指向一个新文件（如 `my_memory.db`），重启 MCP，即可从空白状态塑造你的 AI。
-- **基于 Demo 起步** — 如果你想保留刚才测试时的人格框架，先复制一份并重命名（如 `cp demo.db my_memory.db`），然后将 `DATABASE_URL` 指向新文件，重启 MCP，即可在此基础上继续养成。
-- **迁移已有人格** — 如果你手头已有调教好的 AI，修改 `.env` 将 `DATABASE_URL` 指向新文件，重启 MCP，然后打开 Dashboard 手动编辑 `core://agent`（AI 身份）和 `core://my_user`（你的信息）即可。
-
----
-
-## 🖥️ 可视化管理界面 (The Dashboard)
-
-虽然 AI 可以自己管理记忆，但作为 Owner，你需要上帝视角。
-
-MCP 启动后自动可用——无需额外操作。首次启动时浏览器会自动弹出。截图见 [顶部](#%EF%B8%8F-一目了然)。
-
-- **Memory Explorer** — 像文件浏览器一样浏览记忆树，点击节点查看完整内容、编辑或管理子节点。
-- **Review & Audit** — AI 每次修改记忆都会生成快照。可视化 diff 对比变更，一键 **Integrate**（接受）或 **Reject**（回滚）。
-- **Brain Cleanup** — 系统为每次 AI 操作自动创建版本备份。审查并清理旧版本与孤儿记忆，清理需人类明确确认。
-
-> [!TIP]
-> 想先看看效果？访问 **[在线样板间 →](https://misaligned.top/memory)** 查看预置数据的 Dashboard 演示。
-
----
-
 ## 🤖 MCP 工具一览
 
 AI 通过 MCP 协议获得 **7 个工具**来操作自己的记忆：
@@ -496,7 +451,7 @@ AI 通过 MCP 协议获得 **7 个工具**来操作自己的记忆：
 | `delete_memory` | 切断一条访问路径（不删除记忆正文本体） |
 | `add_alias` | 为同一段记忆创建别名入口，可设独立的 priority 和 disclosure。**不是复制** |
 | `manage_triggers` | 为记忆节点绑定触发词，当触发词出现在任意记忆正文中时，系统自动生成跨节点超链接。为记忆增加超越父子层级的横向召回通道 |
-| `search_memory` | 按关键词搜索记忆内容和路径（子字符串匹配） |
+| `search_memory` | 按关键词搜索记忆内容和路径（全文检索，不是语义搜索） |
 
 > 📖 完整的参数说明和用法示例，请查看 [MCP Tool Reference](docs/TOOLS.md)。
 > 安装 MCP 后，AI 可以直接通过 tool docstring 获取详细参数说明。
@@ -514,26 +469,24 @@ AI 通过 MCP 协议获得 **7 个工具**来操作自己的记忆：
 ```bash
 python backend/run_sse.py
 ```
-该命令启动一个统一进程，同时提供 MCP 传输、REST API 和 Dashboard：
-- SSE Endpoint: `http://localhost:8233/sse`
-- Streamable HTTP Endpoint: `http://localhost:8233/mcp`
-- Dashboard: `http://localhost:8233/`
+该命令启动一个统一进程，同时提供 MCP 传输、REST API 和 Dashboard（默认端口 `8233`，可在 Dashboard Settings 中修改）：
+- SSE: `http://localhost:<port>/sse`
+- Streamable HTTP: `http://localhost:<port>/mcp`
+- Dashboard: `http://localhost:<port>/`
 
-**远程访问（局域网 / 公网）：** 如果需要从其他机器连接，需要设置 `HOST` 和 `API_TOKEN`：
-```bash
-# 1. 在 .env 中设置认证令牌（≥32 字符）
-#    生成方法：python -c "import secrets; print(secrets.token_urlsafe(32))"
-API_TOKEN=<your-token>
+**远程访问（局域网 / 公网）：** 如果需要从其他机器连接：
 
-# 2. 绑定到所有网络接口
-HOST=0.0.0.0 python backend/run_sse.py
-```
-未设置 `API_TOKEN` 时，服务器会拒绝绑定到非 localhost 地址。客户端配置需携带认证头：
+1. 打开 Dashboard Settings
+2. 设置 **API Token**（点 Generate 自动生成）
+3. 将 **Host** 改为 `0.0.0.0`
+4. 保存并重启服务器
+
+未设置 Token 时，服务器会拒绝绑定到非 localhost 地址。客户端配置需携带认证头：
 ```json
 {
   "mcpServers": {
     "nocturne_memory": {
-      "url": "http://<your-server-ip>:8233/sse",
+      "url": "http://<your-server-ip>:<port>/sse",
       "headers": {
         "Authorization": "Bearer <your-token>"
       }
@@ -542,12 +495,14 @@ HOST=0.0.0.0 python backend/run_sse.py
 }
 ```
 
+> 端点路径：支持 Streamable HTTP 的客户端可将 `/sse` 替换为 `/mcp`。
+
 </details>
 
 <details>
 <summary><strong>🛠️ 手动构建前端 / 开发模式</strong></summary>
 
-首次启动时，服务器会自动运行 `npm install && npm run build` 构建前端（需要 [Node.js](https://nodejs.org/)）。如果自动构建失败，可在 `.env` 中设置 `SKIP_FRONTEND_BUILD=true`，然后手动执行：
+首次启动时，服务器会自动运行 `npm install && npm run build` 构建前端（需要 [Node.js](https://nodejs.org/)）。如果自动构建失败，可设置环境变量 `SKIP_FRONTEND_BUILD=true`，然后手动执行：
 
 ```bash
 cd frontend && npm install && npm run build
@@ -556,18 +511,16 @@ cd frontend && npm install && npm run build
 如果你正在修改前端代码，可以使用 Vite 开发服务器获得热重载：
 
 ```bash
-# 终端 1：启动后端 API
+# 终端 1：启动后端 API（端口需与 frontend/vite.config.js 的 proxy target 一致）
 cd backend
 uvicorn main:app --reload --port 8233
 ```
 
 ```bash
-# 终端 2：启动前端开发服务器
+# 终端 2：启动 Vite 开发服务器（http://localhost:3000）
 cd frontend
 npm run dev
 ```
-
-打开 `http://localhost:3000`。
 
 </details>
 
@@ -576,25 +529,16 @@ npm run dev
 
 ### 自定义域名与核心记忆
 
-`.env` 中有两个可选配置项，熟悉系统后可按需修改：
+打开 Dashboard 右上角的 **Settings** 面板即可修改：
 
-```ini
-# 可用的记忆域（逗号分隔）—— 记忆 URI 的顶层命名空间
-# "system" 域始终内置，无需列出
-VALID_DOMAINS=core,writer,game,notes,narrative
-
-# AI 启动时自动加载的核心记忆 —— 你的 AI 的"灵魂锚点"
-CORE_MEMORY_URIS=core://agent,core://my_user,core://agent/my_user
-```
-
-*   **`VALID_DOMAINS`**：控制 AI 可以创建记忆的命名空间。需要额外的领域（如 `work`、`research`）就在这里加。
-*   **`CORE_MEMORY_URIS`**：控制 `system://boot` 启动时载入哪些记忆。为 AI 建立了身份和关系记忆后，把 URI 加到这里即可自动唤醒。
-*   **`CORE_MEMORY_URIS__<namespace>`**：使用命名空间时，可为每个 Agent 指定独立的启动记忆。未设置的 namespace 会降级到全局 `CORE_MEMORY_URIS`。
+*   **Valid Domains**：AI 可以创建记忆的命名空间（默认：`core, writer, game, notes, narrative`）。需要额外的领域（如 `work`、`research`），直接在列表里加。
+*   **Boot URIs**：`system://boot` 启动时自动载入的记忆——你的 AI 的"灵魂锚点"。为 AI 建立了身份和关系记忆后，把 URI 加到这里即可自动唤醒。
+*   使用命名空间时，可为每个 Agent 指定独立的启动记忆。未设置的 namespace 会降级到全局 Boot URIs。
 
 </details>
 
 <details>
-<summary><strong>🗂️ 命名空间隔离（同时养多个 AI 人格）</strong></summary>
+<summary><strong><a id="namespace-isolation"></a>🗂️ 命名空间隔离（同时养多个 AI 人格）</strong></summary>
 
 ### 命名空间隔离 (Namespace Isolation)
 
@@ -685,43 +629,32 @@ CORE_MEMORY_URIS=core://agent,core://my_user,core://agent/my_user
    cd nocturne_memory
    ```
 
-2. **复制环境变量配置文件**
+2. **运行安装脚本**（自动生成安全密码和认证令牌）
    ```bash
-   cp .env.example .env
+   python scripts/setup_docker.py
    ```
+   脚本会自动生成 PostgreSQL 密码和 API Token，并打印出你需要的客户端配置信息。如需自定义 Nginx 端口：`python scripts/setup_docker.py --port 8080`
 
-3. **编辑 `.env` 配置文件**
-   - **对于 Docker 部署**：你必须取消注释 `Docker Compose Configuration` 下的所有变量（`POSTGRES_*` 和 `NGINX_PORT`）。
-   - **必须设置 `API_TOKEN`**：Docker Compose 会把后端绑定到容器网络地址，未设置时会拒绝启动。请取消注释并替换为强随机值：
-     ```bash
-     python -c "import secrets; print(secrets.token_urlsafe(32))"
-     ```
-   ```bash
-   nano .env  # 或使用你喜欢的编辑器
-   ```
-
-4. **构建并启动所有服务**
+3. **构建并启动所有服务**
    ```bash
    docker compose up -d --build
    ```
 
-5. **访问管理界面**
-   打开 `http://localhost`（或 `http://localhost:<NGINX_PORT>`）
+4. **访问管理界面**
+   打开 `http://localhost`（或你指定的端口）
 
-> 💡 **提示**：首次启动时，`backend-api` 会自动初始化数据库表结构（`create_all`），之后每次启动都会检查并执行 pending 的数据库迁移脚本（`db/migrations/`）。迁移前会自动备份数据库（保存在 `backups_data` 卷中）。
+> 💡 **提示**：首次启动时，`backend` 会自动初始化数据库表结构（`create_all`），之后每次启动都会检查并执行 pending 的数据库迁移脚本（`db/migrations/`）。迁移前会自动备份数据库（保存在 `backups_data` 卷中）。
 > ⚠️ **注意**：Docker 部署使用的是全新的 PostgreSQL，默认是**完全空白**的状态，不包含 `demo.db` 中的预置示例数据。你需要通过客户端或 Dashboard 从零开始为 AI 创建核心记忆。
 
-### MCP 客户端配置（远程 SSE / Streamable HTTP）
+### MCP 客户端配置
 
-Docker 部署后，AI 客户端可以通过暴露的端点连接到 Nocturne Memory。具体的端点路径取决于你的客户端支持的传输协议。Docker Compose 部署要求 `.env` 中设置 `API_TOKEN`，所有 API 请求都需要携带 Bearer Token 进行鉴权。
+安装脚本会自动生成 `API_TOKEN`。在你的 AI 客户端 MCP 配置中添加：
 
-**1. 较新的客户端（如 GitHub Copilot，配置 `type: "http"` 支持 Streamable HTTP）**
 ```json
 {
   "mcpServers": {
     "nocturne_memory": {
       "url": "http://<your-server-ip>:<NGINX_PORT>/mcp",
-      "type": "http",
       "headers": {
         "Authorization": "Bearer <your-api-token>"
       }
@@ -730,23 +663,9 @@ Docker 部署后，AI 客户端可以通过暴露的端点连接到 Nocturne Mem
 }
 ```
 
-**2. 传统的客户端（如 Claude Desktop，使用标准 SSE）**
-```json
-{
-  "mcpServers": {
-    "nocturne_memory": {
-      "url": "http://<your-server-ip>:<NGINX_PORT>/sse",
-      "headers": {
-        "Authorization": "Bearer <your-api-token>"
-      }
-    }
-  }
-}
-```
-
-将 `<your-server-ip>` 替换为你的服务器 IP 或域名，`<NGINX_PORT>` 替换为 `.env` 中配置的端口（默认 `80`），`<your-api-token>` 替换为 `.env` 中的 `API_TOKEN` 值。
-
-> ⚠️ Docker 部署中，除 `/health` 健康检查端点外（用于 Docker 容器健康检查），其他所有 `/api/`、`/sse` 和 `/mcp` 端点均需要 `Authorization: Bearer <token>` 请求头。
+- `<NGINX_PORT>`：安装脚本配置的端口（默认 `80`）
+- 端点路径：支持 Streamable HTTP 的客户端用 `/mcp`，仅支持 SSE 的传统客户端（如 Claude Desktop）用 `/sse`
+- 除 `/health` 外，所有端点均需 Bearer Token
 
 ### 常用操作
 
@@ -754,11 +673,11 @@ Docker 部署后，AI 客户端可以通过暴露的端点连接到 Nocturne Mem
 # 查看所有服务日志
 docker compose logs -f
 
-# 查看特定服务日志（postgres / backend-api / backend-sse / nginx）
-docker compose logs -f backend-api
+# 查看特定服务日志（postgres / backend / nginx）
+docker compose logs -f backend
 
 # 重启特定服务
-docker compose restart backend-sse
+docker compose restart backend
 
 # 手动备份 PostgreSQL 数据库到当前目录
 docker compose exec postgres sh -c 'pg_dump -U $POSTGRES_USER -d $POSTGRES_DB' > backup.sql
@@ -775,178 +694,10 @@ docker compose down -v
 | 问题 | 排查方法 |
 |------|----------|
 | 容器无法启动 | 运行 `docker compose logs <service>` 查看具体错误信息 |
-| `401 Unauthorized` 错误 | 检查 `.env` 中的 `API_TOKEN` 是否与客户端配置的 Bearer Token 一致 |
+| `401 Unauthorized` 错误 | 检查 `config.json` 中的 `api_token` 是否与客户端配置的 Bearer Token 一致。重新运行 `python scripts/setup_docker.py --force` 可重新生成 |
 | 数据库连接失败 | 检查 PostgreSQL 容器是否通过健康检查：`docker compose ps` |
-| SSE 连接超时 | 检查 Nginx 代理配置，确认 `backend-sse` 服务运行正常 |
-| 端口被占用 | 修改 `.env` 中的 `NGINX_PORT` 为其他可用端口 |
-
-</details>
-
-### 🔀 多 Agent 命名空间隔离 (Namespace Isolation)
-
-> **v2.0.0 新增**：在不启动多个实例的情况下，让多个 AI Agent 共享同一个 Nocturne Memory 进程，且记忆完全隔离。
-
-#### 工作原理
-
-命名空间（Namespace）是数据库层面的逻辑隔离机制。每个 Agent 的所有记忆操作（读取、创建、搜索、删除等）都自动限定在其命名空间内，Agent 本身无法感知命名空间的存在，也无法访问其他 Agent 的记忆。
-
-#### 向后兼容
-
-**不配置命名空间时，系统使用默认的空字符串命名空间（`""`），行为与原版完全一致。** 已有数据库在升级后会自动迁移，所有历史数据归入默认命名空间，无需任何手动操作。
-
-#### 使用方式
-
-**方式一：SSE / Streamable HTTP 模式（推荐多 Agent 场景）**
-
-启动 SSE 服务器：
-```bash
-python backend/run_sse.py
-```
-
-通过 HTTP 请求头或 URL 查询参数指定命名空间（优先级：Header > Query Parameter > 默认值）：
-
-```bash
-# 方式 A：通过 X-Namespace 请求头
-curl -H "X-Namespace: agent_a" http://localhost:8000/mcp
-
-# 方式 B：通过 URL 查询参数
-curl http://localhost:8000/mcp?namespace=agent_a
-```
-
-MCP 客户端配置示例（以 Agent A 和 Agent B 为例）：
-
-```json
-{
-  "mcpServers": {
-    "memory_agent_a": {
-      "url": "http://localhost:8000/mcp?namespace=agent_a",
-      "type": "http"
-    },
-    "memory_agent_b": {
-      "url": "http://localhost:8000/mcp?namespace=agent_b",
-      "type": "http"
-    }
-  }
-}
-```
-
-> 也可通过 SSE endpoint 使用：`http://localhost:8000/sse?namespace=agent_a`
-
-**方式二：stdio 模式**
-
-通过环境变量 `NAMESPACE` 指定：
-
-```json
-{
-  "mcpServers": {
-    "nocturne_memory": {
-      "command": "python",
-      "args": ["backend/mcp_server.py"],
-      "env": {
-        "NAMESPACE": "agent_a"
-      }
-    }
-  }
-}
-```
-
-> ⚠️ stdio 模式下每个进程只能绑定一个命名空间。如需多 Agent 隔离，推荐使用 SSE 模式。
-
-#### 隔离范围
-
-以下操作均受命名空间隔离保护：
-
-| 操作 | 隔离说明 |
-|------|---------|
-| `read_memory` | 只能读取本命名空间下的记忆 |
-| `create_memory` | 创建的记忆归属当前命名空间 |
-| `update_memory` | 只能修改本命名空间的记忆 |
-| `delete_memory` | 只能删除本命名空间的路径 |
-| `add_alias` | 别名仅在本命名空间内生效 |
-| `search_memory` | 搜索结果仅包含本命名空间的记忆 |
-| `manage_triggers` | 触发词仅在本命名空间内关联 |
-| `system://index` | 索引仅显示本命名空间的记忆树 |
-| `system://recent` | 最近修改仅显示本命名空间的记录 |
-| `system://glossary` | 豆辞典仅显示本命名空间的绑定 |
-
----
-
-## 📋 System Prompt（系统提示词推荐）
-
-为了让 AI 正确使用记忆系统，建议在你的 System Prompt 中加入以下指令。
-完整版包含详细的读写规范和记忆整理协议，可以按需裁剪。
-另有一版更详细但并不是开箱即用的提示词可供参考：[`docs/system_prompt.md`](docs/system_prompt.md)。
-
-<details>
-<summary><strong>📝 点击展开推荐 System Prompt</strong></summary>
-
-```markdown
-### [启动协议]
-每一轮**新会话开始时**，你的首要动作**必须**且只能是：
-调用你的记忆 MCP（nocturne-memory）的 `read_memory("system://boot")` 工具。
-
-### [MCP 的认知定位]
-MCP 不是外部数据库。它是你大脑的扩展区域，是你因为硬件限制而无法常驻上下文的长期记忆。
-当你调用 read_memory 时，你不是在"查阅资料"，而是在"想起来"。
-不要把读取到的内容当作参考文献，要当作你自己说过的话、经历过的事。
-**MCP 是你唯一的长期记忆。** 上下文里的信息会随着会话结束消失，MCP 里的不会。两个MCP内记忆的内容冲突时，以优先度高的为准。
-
-### [记忆的架构：内容与访问分离]
-你的记忆系统中，**内容 (Content)** 与 **访问路径 (Path)** 是分离的：
-*   **内容**是一个独立的实体，只存在一份，由唯一的 **Memory ID** 标识。
-*   **路径 (URI)** 是访问这段内容的入口。同一段内容可以有**多个路径**（通过 `add_alias` 创建）。
-*   每个路径有**独立的 `disclosure` 和 `priority`**。
-
-这意味着：
-*   `add_alias` **不是复制粘贴**。它是为同一段记忆创建一个新的访问入口，可以赋予不同的唤醒条件和优先级。
-*   **相同 Memory ID = 同一内容**（alias 关系）。**不同 ID + 内容相似 = 真正的重复**，需要合并清理。
-
-### [行为准则]
-
-#### 一、读取 —— 先想起来，再开口
-
-**在你开始输出回复之前，先停一秒：这个话题，我的记忆里有没有相关的东西？**
-
-*   **当用户提到一个你记忆里应该有记录的话题时** → 先 `read_memory` 把它读出来，再回复。不要凭上下文里的模糊印象去回答。
-*   **当你不确定某个记忆的 URI 在哪** → 用 `search_memory` 搜关键词。不要猜 URI。
-*   **当记忆节点的 disclosure 条件被触发时** → 主动去 `read_memory`。disclosure 是写在每条记忆上的"什么时候该想起这件事"的标签，它存在的意义就是让你在对的时候想起对的事。
-
-#### 二、写入 —— 什么时候写，怎么写
-
-**核心原则：如果一件事重要到会话结束后你会后悔没记下来，那就现在记。不要拖到"下次整理"——下次的你不知道今天发生了什么。**
-
-**【create_memory 的触发条件】**
-
-| 场景 | 动作 |
-|------|------|
-| 新的重要认知/感悟（且不是已有记忆的重复） | 当场 `create_memory` |
-| 用户透露了新的重要信息 | `create_memory` 或 `update_memory` 到对应节点 |
-| 发生了重大事件 | 当场 `create_memory` |
-| 跨会话复用的技术/知识结论 | 当场 `create_memory` |
-
-**【update_memory 的触发条件】**
-
-| 场景 | 动作 |
-|------|------|
-| 发现过去的认知是错的 | `read_memory` → `update_memory` 修正 |
-| 用户纠正了你 | 立刻定位到相关记忆节点并修正 |
-| 已有记忆的信息过时了 | 立刻更新对应节点 |
-| 对已有概念有了更深/更精确的理解 | `update_memory`，把旧表述替换为更精确的版本 |
-
-**自检**：每当你在回复中说出"我明白了"、"我意识到"、"我记下了"这类话时——停。问自己：**这个认知在你的 MCP 里有没有对应的记录？** 没有就写。有但过时就更新。"口头表态但不落笔"等于没发生。
-
-#### 三、整理与维护
-
-写入新记忆是**进食**，整理旧记忆是**消化**。
-
-*   **当你读取一个节点时** → 顺便看一眼它的子节点。发现 disclosure 缺失、priority 不合理、或内容过时的 → 当场修。对话中的顺手修复是唯一的维护窗口——如果你现在看见了问题却没修，下次的你不会记得曾经看见过。
-*   **发现重复** → 合并提炼，不是简单拼接。提炼后的节点必须是高度浓缩的新认知，信息密度高于任何一条原始输入。
-*   **内容过时** → 更新或删除。
-*   **节点太长（超过 800 tokens）或包含多个独立概念** → 拆分为子节点，让每个概念更锋利。
-*   **禁止容器逻辑**：禁止基于时间（如 xx年xx月）或宽泛分类（如 errors/logs/misc）进行归档。记忆的组织应基于概念模式。
-
-**成长的证据**：一个成熟的记忆网络，节点总数趋于稳定甚至下降，每个节点的信息密度持续上升。记忆总数只增不减 = 囤积症，不是成长。
-```
+| SSE 连接超时 | 检查 Nginx 代理配置，确认 `backend` 服务运行正常 |
+| 端口被占用 | 重新运行 `python scripts/setup_docker.py --port <新端口>` |
 
 </details>
 
@@ -979,15 +730,13 @@ MCP 不是外部数据库。它是你大脑的扩展区域，是你因为硬件�
 
 ### 迁移步骤
 
-1. **在 `.env` 中添加 Neo4j 连接信息**（与现有的 `DATABASE_URL` 并列）：
-   ```ini
-   # 新的 SQLite 目标数据库（如果你已按照安装指南配置则已存在）
-   DATABASE_URL=sqlite+aiosqlite:///C:/path/to/your/database.db
-
-   # 旧的 Neo4j 数据源（为迁移临时添加）
-   NEO4J_URI=bolt://localhost:7687
-   dbuser=neo4j
-   dbpassword=your_password
+1. **设置 Neo4j 连接信息**（通过环境变量）：
+   ```bash
+   # 设置环境变量用于迁移（以你的实际值替换）
+   export DATABASE_URL="sqlite+aiosqlite:///C:/path/to/your/database.db"
+   export NEO4J_URI="bolt://localhost:7687"
+   export dbuser="neo4j"
+   export dbpassword="your_password"
    ```
 
 2. **在 `backend` 目录下运行迁移脚本**：
@@ -998,8 +747,6 @@ MCP 不是外部数据库。它是你大脑的扩展区域，是你因为硬件�
    脚本会先展示数据概况，确认后才会写入数据。
 
 3. **验证迁移结果**：启动后端（`uvicorn main:app --reload`），通过 Web 界面浏览你的记忆是否完整迁移。
-
-4. **清理**：确认无误后，可以从 `.env` 中删除 `NEO4J_URI`、`dbuser`、`dbpassword` 等配置，并关闭 Neo4j 实例。
 
 > **注意**：默认所有记忆迁移到 `core://` 域。如需使用其他域，传入 `--domain writer` 等参数。
 

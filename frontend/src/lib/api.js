@@ -59,12 +59,79 @@ export const getDomains = () =>
 export const getNamespaces = () =>
   api.get('/browse/namespaces').then(res => res.data);
 
-// ============ Boot URI API ============
+export const deleteNode = (domain, path) =>
+  api.delete('/browse/node', { params: { domain, path } }).then(res => res.data);
 
-export const getBootUris = () =>
-  api.get('/browse/boot-uris').then(res => res.data.uris);
+export const searchMemories = (q, { domain, limit } = {}) =>
+  api.get('/browse/search', { params: { q, domain, limit } }).then(res => res.data);
 
-export const toggleBootUri = (uri, enabled) =>
-  api.put('/browse/boot-uris', { uri, enabled }).then(res => res.data);
+export const createMemory = (data) =>
+  api.post('/browse/node', data).then(res => res.data);
+
+export const addAlias = (data) =>
+  api.post('/browse/node/alias', data).then(res => res.data);
+
+export const renameNode = (data) =>
+  api.post('/browse/node/rename', data).then(res => res.data);
+
+// ============ Settings API ============
+
+export const getSettings = () =>
+  api.get('/settings').then(res => res.data);
+
+export const updateSettings = (data) =>
+  api.put('/settings', data).then(res => res.data);
+
+export const getSettingsBootUris = () =>
+  api.get('/settings/boot-uris').then(res => res.data);
+
+export const setSettingsBootUris = (uris) =>
+  api.put('/settings/boot-uris', { uris }).then(res => res.data);
+
+export const toggleSettingsBootUri = (uri, enabled) =>
+  api.patch('/settings/boot-uris', { uri, enabled }).then(res => res.data);
+
+export const getAllBootUris = () =>
+  api.get('/settings/boot-uris/all').then(res => res.data.boot_uris);
+
+const _nsSlug = (ns) => encodeURIComponent(ns || '_ns_default_0x7f3a9e');
+
+export const setBootUrisForNs = (namespace, uris) =>
+  api.put(`/settings/boot-uris/ns/${_nsSlug(namespace)}`, { uris }).then(res => res.data);
+
+export const deleteBootUrisForNs = (namespace) =>
+  api.delete(`/settings/boot-uris/ns/${_nsSlug(namespace)}`).then(res => res.data);
+
+// --- Presets ---
+
+export const listPresets = () =>
+  api.get('/presets').then(res => res.data.presets);
+
+export const createPreset = (data) =>
+  api.post('/presets', data).then(res => res.data);
+
+export const updatePreset = (id, data) =>
+  api.put(`/presets/${id}`, data).then(res => res.data);
+
+export const deletePreset = (id) =>
+  api.delete(`/presets/${id}`).then(res => res.data);
+
+export const activatePreset = (id) =>
+  api.post(`/presets/${id}/activate`).then(res => res.data);
+
+export const duplicatePreset = (id, newName) =>
+  api.post(`/presets/${id}/duplicate`, { new_name: newName }).then(res => res.data);
+
+export const getDatabaseStatus = () =>
+  api.get('/settings/database/status').then(res => res.data);
+
+export const testDatabase = (database_url) =>
+  api.post('/settings/database/test', { database_url }).then(res => res.data);
+
+export const createDatabase = (path) =>
+  api.post('/settings/database/create', { path }).then(res => res.data);
+
+export const openDbFolder = () =>
+  api.post('/settings/database/open-folder').then(res => res.data);
 
 export default api;

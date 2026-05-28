@@ -13,7 +13,7 @@
 | `uri` | `str` | 记忆的 URI，如 `"core://agent"` |
 
 **特殊系统 URI：**
-- `system://boot` — 加载核心记忆（优先读取 `CORE_MEMORY_URIS__<namespace>`，未设置时降级到 `CORE_MEMORY_URIS`）
+- `system://boot` — 加载 Dashboard Settings / `config.json` 中配置的 Boot URIs；使用命名空间时优先读取当前 namespace 的配置，未设置时降级到全局 Boot URIs
 - `system://index/<domain>` — 特定域名记忆索引
 - `system://recent` — 最近修改的 10 条记忆
 - `system://recent/N` — 最近修改的 N 条记忆

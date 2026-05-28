@@ -126,6 +126,11 @@ class DatabaseManager:
             await run_migrations(self.engine)
         except Exception as e:
             db_url = self.database_url
+            
+            docker_hint = ""
+            if not _os.path.exists("/.dockerenv") and "@postgres:" in db_url:
+                docker_hint = "  - ⚠️ Detected Docker internal hostname 'postgres' in local run. Please change it to an accessible address (e.g., localhost) or use the Docker service.\n"
+
             if "@" in db_url and ":" in db_url:
                 try:
                     parsed = urlparse(db_url)
@@ -138,7 +143,8 @@ class DatabaseManager:
                 f"  URL: {db_url}\n"
                 f"  Error: {e}\n\n"
                 f"Troubleshooting:\n"
-                f"  - Check that DATABASE_URL in your .env file is correct\n"
+                f"{docker_hint}"
+                f"  - Check that database_url in config.json is correct\n"
                 f"  - For PostgreSQL, ensure the host is reachable and the password has no unescaped special characters (& * # etc.)\n"
                 f"  - For SQLite, ensure the file path is absolute and the directory exists"
             ) from e

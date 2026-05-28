@@ -21,9 +21,8 @@ import shutil
 import subprocess
 import sys
 import webbrowser
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from dotenv import load_dotenv, find_dotenv
+import config as _cfg
 
 # Ensure we can import from backend modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -52,151 +51,58 @@ from system_views import (
     generate_diagnostic_view,
 )
 import contextlib
-
-# Load environment variables
-# Explicitly look for .env in the parent directory (project root)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(current_dir)
-dotenv_path = os.path.join(root_dir, ".env")
-
-if os.path.exists(dotenv_path):
-    load_dotenv(dotenv_path)
-else:
-    # Fallback to find_dotenv
-    _dotenv_path = find_dotenv(usecwd=True)
-    if _dotenv_path:
-        load_dotenv(_dotenv_path)
+from locales import t
 
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+from web_app import FRONTEND_DIR, build_web_app
 FRONTEND_SRC = FRONTEND_DIR.parent
 
 
-def build_web_app(*, extra_routes=None, extra_prefixes=None, lifespan=None):
-    """Build the ASGI app: REST API + optional extra routes + frontend SPA.
-
-    Args:
-        extra_routes:   Additional Starlette Route/Mount objects (e.g. MCP transports).
-        extra_prefixes: Path prefixes for those routes (e.g. ["/sse", "/mcp"]),
-                        so the frontend fallback knows not to capture them.
-        lifespan:       Optional async context manager for the inner Starlette app.
-    """
-    from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
-    from starlette.applications import Starlette
-    from starlette.responses import FileResponse
-    from starlette.routing import Mount, Route
-    from starlette.types import ASGIApp, Receive, Scope, Send
-    from auth import BearerTokenAuthMiddleware, get_cors_config
-    from namespace_middleware import NamespaceMiddleware
-    from api import review_router, browse_router, maintenance_router
-    from health import router as health_router, health_check
-
-    api = FastAPI(
-        title="Nocturne Memory API",
-        docs_url="/docs",
-        openapi_url="/openapi.json",
-    )
-    api.include_router(health_router)
-    api.include_router(review_router)
-    api.include_router(browse_router)
-    api.include_router(maintenance_router)
-
-    routes = list(extra_routes or [])
-    routes.append(Mount("/api", app=api))
-
-    async def _health_endpoint(request):
-        return await health_check()
-
-    routes.append(Route("/health", endpoint=_health_endpoint))
-
-    inner = Starlette(routes=routes, lifespan=lifespan)
-    authed = NamespaceMiddleware(
-        BearerTokenAuthMiddleware(inner, excluded_paths=["/api/health", "/health"])
-    )
-    cors_authed = CORSMiddleware(
-        authed,
-        **get_cors_config(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    backend_prefixes = tuple(["/api", "/health"] + list(extra_prefixes or []))
-
-    class _Fallback:
-        """Route backend prefixes to the inner app; everything else to the SPA."""
-
-        def __init__(self, backend: ASGIApp, dist: Path):
-            self.backend = backend
-            self.dist = dist
-
-        async def __call__(self, scope: Scope, receive: Receive, send: Send):
-            if scope["type"] != "http":
-                await self.backend(scope, receive, send)
-                return
-            path: str = scope.get("path", "/")
-            if any(path == p or path.startswith(p + "/") for p in backend_prefixes):
-                await self.backend(scope, receive, send)
-                return
-                
-            if not self.dist.is_dir():
-                from starlette.responses import PlainTextResponse
-                await PlainTextResponse(
-                    "Admin UI is building or missing. Please refresh in a moment...", 
-                    status_code=503
-                )(scope, receive, send)
-                return
-
-            try:
-                f = (self.dist / path.lstrip("/")).resolve()
-                if path != "/" and f.is_file() and f.is_relative_to(self.dist):
-                    await FileResponse(f)(scope, receive, send)
-                    return
-            except (ValueError, OSError):
-                pass
-                
-            index_file = self.dist / "index.html"
-            if index_file.is_file():
-                await FileResponse(index_file)(scope, receive, send)
-            else:
-                from starlette.responses import PlainTextResponse
-                await PlainTextResponse("Admin UI missing index.html.", status_code=404)(scope, receive, send)
-
-    return _Fallback(cors_authed, FRONTEND_DIR)
-
-
 async def _ensure_frontend_built():
-    """Auto-build the frontend dashboard on first run if dist/ is missing."""
-    if FRONTEND_DIR.is_dir():
-        return
+    """Auto-build the frontend dashboard on first run or when code updates."""
     if not (FRONTEND_SRC / "package.json").is_file():
         return
     if os.environ.get("SKIP_FRONTEND_BUILD", "").lower() in ("true", "1", "yes"):
         return
     if not shutil.which("npm"):
-        print(
-            "[Nocturne] Admin UI not built and npm not found. "
-            "Install Node.js or build manually: "
-            "cd frontend && npm install && npm run build",
-            file=sys.stderr,
-        )
+        print(t("startup.npm_not_found"), file=sys.stderr)
         return
 
-    print(
-        "[Nocturne] First run — building Admin UI (this may take a minute)...",
-        file=sys.stderr,
-    )
+    # Check version from package.json to detect frontend updates
+    current_version = "unknown"
+    try:
+        package_json_path = FRONTEND_SRC / "package.json"
+        if package_json_path.is_file():
+            import json
+            content = package_json_path.read_text(encoding="utf-8")
+            pkg_data = json.loads(content)
+            if "version" in pkg_data:
+                current_version = pkg_data["version"]
+    except Exception:
+        pass
+
+    build_marker = FRONTEND_DIR / ".build_version"
+    
+    if FRONTEND_DIR.is_dir():
+        if build_marker.is_file():
+            try:
+                last_build_version = build_marker.read_text().strip()
+                if last_build_version == current_version and current_version != "unknown":
+                    return  # Up to date
+            except Exception:
+                pass
+        # If marker is missing or doesn't match, we need to rebuild.
+
+    print(t("startup.building"), file=sys.stderr)
     try:
         steps = [
-            ("Installing dependencies", "npm install --no-fund --no-audit"),
-            ("Compiling", "npm run build"),
+            (t("startup.installing_deps"), "npm install --no-fund --no-audit"),
+            (t("startup.compiling"), "npm run build"),
         ]
-        if (FRONTEND_SRC / "node_modules").is_dir():
-            steps = steps[1:]
 
         for label, cmd in steps:
-            print(f"  {label}...", file=sys.stderr)
+            print(t("startup.step_progress").format(label=label), file=sys.stderr)
             result = await asyncio.to_thread(
                 subprocess.run,
                 cmd,
@@ -208,16 +114,20 @@ async def _ensure_frontend_built():
             if result.returncode != 0:
                 err = result.stderr.strip() or result.stdout.strip()
                 print(
-                    f"[Nocturne] '{cmd}' failed (exit {result.returncode}):\n{err}",
+                    t("startup.build_failed").format(
+                        cmd=cmd, exit_code=result.returncode, error_msg=err),
                     file=sys.stderr,
                 )
                 return
 
-        print("[Nocturne] Admin UI ready.", file=sys.stderr)
+        # Write the marker after successful build
+        if current_version != "unknown" and FRONTEND_DIR.is_dir():
+            build_marker.write_text(current_version)
+
+        print(t("startup.admin_ready"), file=sys.stderr)
     except Exception as e:
         print(
-            f"[Nocturne] Auto-build failed: {e}\n"
-            "  Build manually: cd frontend && npm install && npm run build",
+            t("startup.build_error").format(error=str(e)),
             file=sys.stderr,
         )
 
@@ -228,9 +138,16 @@ async def lifespan(server: FastMCP):
     web_server = None
     web_task = None
     try:
+        _cfg.ensure_config_exists()
+
         db_manager = get_db_manager()
         if os.environ.get("SKIP_DB_INIT", "").lower() not in ("true", "1", "yes"):
             await db_manager.init_db()
+
+        # Auto-promote config.json boot_uris into presets table on first run
+        from db import get_preset_service
+        preset_service = get_preset_service()
+        await preset_service.auto_promote_from_config()
 
         # Launch frontend build in background so we don't block MCP handshake
         asyncio.create_task(_ensure_frontend_built())
@@ -241,27 +158,29 @@ async def lifespan(server: FastMCP):
             import uvicorn
             from auth import enforce_network_auth
 
-            port = int(os.environ.get("WEB_PORT", "8233"))
-            web_host = os.environ.get("WEB_HOST", "127.0.0.1")
+            port = int(_cfg.get("web_port"))
+            web_host = _cfg.get("host")
             enforce_network_auth(host=web_host)
+            @contextlib.asynccontextmanager
+            async def embedded_lifespan(app):
+                # The parent process (FastMCP lifespan) already owns DB init & close.
+                # The embedded admin UI should not manage the database connection lifecycle.
+                yield
+
             config = uvicorn.Config(
-                build_web_app(), host=web_host, port=port, log_level="warning",
+                build_web_app(lifespan=embedded_lifespan), host=web_host, port=port, log_level="warning",
             )
             web_server = uvicorn.Server(config)
             
             async def _serve_ui():
                 try:
                     await web_server.serve()
-                except Exception as e:
+                except Exception:
                     # Ignore the raw error message (usually OSError for address in use)
                     # and print a user-friendly explanation.
-                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
-                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
-                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
+                    print(t("startup.port_in_use").format(port=port), file=sys.stderr)
                 except SystemExit:
-                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
-                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
-                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
+                    print(t("startup.port_in_use").format(port=port), file=sys.stderr)
 
             web_task = asyncio.create_task(_serve_ui())
             ui = f"http://localhost:{port}/"
@@ -270,7 +189,7 @@ async def lifespan(server: FastMCP):
             print(f"Admin UI:  {ui}", file=sys.stderr)
             print(f"REST API:  {api_docs}", file=sys.stderr)
 
-            auto_open = os.environ.get("AUTO_OPEN_BROWSER", "true").lower() not in ("false", "0", "no")
+            auto_open = _cfg.get("auto_open_browser")
             if auto_open:
                 async def _open_browser():
                     while not getattr(web_server, "started", False):
@@ -303,17 +222,15 @@ mcp = FastMCP(
 # =============================================================================
 # Valid domains (protocol prefixes)
 # =============================================================================
-VALID_DOMAINS = [
-    d.strip()
-    for d in os.getenv("VALID_DOMAINS", "core,writer,game,notes,narrative,system").split(",")
+
+_domains_from_config = _cfg.get("valid_domains")
+VALID_DOMAINS = _domains_from_config if isinstance(_domains_from_config, list) else [
+    d.strip() for d in str(_domains_from_config).split(",") if d.strip()
 ]
+if "system" not in VALID_DOMAINS:
+    VALID_DOMAINS.append("system")
 DEFAULT_DOMAIN = "core"
-PUBLIC_READONLY_MCP = os.getenv("PUBLIC_READONLY_MCP", "").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+PUBLIC_READONLY_MCP = bool(_cfg.get("public_readonly_mcp"))
 
 
 
@@ -430,7 +347,6 @@ async def read_memory(uri: str) -> str:
     - system://recent : Shows recently modified memories (default: 10).
     - system://recent/N : Shows the N most recently modified memories (e.g. system://recent/20).
     - system://glossary : Shows all glossary keywords and their bound nodes.
-    - system://diagnostic/<domain> : Generates a diagnostic report of stale, crowded, and orphaned nodes for a specific domain.
 
     Note: Same Memory ID = same content (alias). Different ID + similar content = redundant content.
 
@@ -448,39 +364,10 @@ async def read_memory(uri: str) -> str:
     # HARDCODED SYSTEM INTERCEPTIONS
     # These bypass the database lookup to serve dynamic system content
     if uri.strip() == "system://boot":
-        from dotenv import dotenv_values
-
         ns = get_namespace()
-        ns_key = f"CORE_MEMORY_URIS__{ns}" if ns else ""
-
-        if "PYTEST_CURRENT_TEST" in os.environ:
-            core_uris_str = None
-            if ns_key and ns_key in os.environ:
-                core_uris_str = os.environ[ns_key]
-            if core_uris_str is None:
-                core_uris_str = os.environ.get("CORE_MEMORY_URIS", "")
-        else:
-            current_env_path = dotenv_path if os.path.exists(dotenv_path) else globals().get('_dotenv_path')
-            env_vars = dotenv_values(current_env_path) if current_env_path else {}
-
-            core_uris_str = None
-            if ns_key:
-                if ns_key in env_vars:
-                    core_uris_str = env_vars[ns_key]
-                elif ns_key in os.environ:
-                    core_uris_str = os.environ[ns_key]
-            
-            if core_uris_str is None:
-                if "CORE_MEMORY_URIS" in env_vars:
-                    core_uris_str = env_vars["CORE_MEMORY_URIS"]
-                elif "CORE_MEMORY_URIS" in os.environ:
-                    core_uris_str = os.environ["CORE_MEMORY_URIS"]
-                else:
-                    core_uris_str = ""
-
-        current_core_uris = [
-            u.strip() for u in core_uris_str.split(",") if u.strip()
-        ]
+        from db import get_preset_service
+        preset_service = get_preset_service()
+        current_core_uris = await preset_service.get_boot_uris(ns)
         return await generate_boot_memory_view(current_core_uris)
 
     # system://index/<domain>

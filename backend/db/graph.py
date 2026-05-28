@@ -102,20 +102,6 @@ class GraphService:
             Memory dict with id, node_uuid, content, priority, disclosure,
             created_at, domain, path — or None if not found.
         """
-        if path == "":
-            return {
-                "id": 0,
-                "node_uuid": ROOT_NODE_UUID,
-                "content": f"Root node for domain '{domain}'.",
-                "priority": 0,
-                "disclosure": None,
-                "deprecated": False,
-                "created_at": None,
-                "domain": domain,
-                "path": "",
-                "alias_count": 0,
-            }
-
         async with self.session() as session:
             result = await session.execute(
                 select(Memory, Edge, Path)
@@ -137,6 +123,19 @@ class GraphService:
             row = result.first()
 
             if not row:
+                if path == "":
+                    return {
+                        "id": 0,
+                        "node_uuid": ROOT_NODE_UUID,
+                        "content": f"Root node for domain '{domain}'.",
+                        "priority": 0,
+                        "disclosure": None,
+                        "deprecated": False,
+                        "created_at": None,
+                        "domain": domain,
+                        "path": "",
+                        "alias_count": 0,
+                    }
                 return None
 
             memory, edge, path_obj = row
@@ -1371,9 +1370,6 @@ class GraphService:
         Content change -> new Memory row with the same node_uuid.
         Metadata change -> update the Edge directly.
         """
-        if path == "":
-            raise ValueError("Cannot update the root node.")
-
         if content is None and priority is None and disclosure is None:
             raise ValueError(
                 f"No update fields provided for '{domain}://{path}'. "

@@ -5,74 +5,16 @@ This replaces the old Entity/Relation/Chapter conceptual split with a simple
 hierarchical browser. Every path is just a node with content and children.
 """
 
-import os
-import re
-from pathlib import Path as FilePath
-from dotenv import dotenv_values, set_key
-
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from db import get_graph_service, get_glossary_service, get_db_manager
+from typing import Optional
+import config
+from db import get_graph_service, get_glossary_service, get_db_manager, get_search_indexer, get_preset_service
 from db.models import Path as PathModel, Edge as EdgeModel, ROOT_NODE_UUID
 from db.namespace import get_namespace
+from locales import t
 from sqlalchemy import select, distinct
-
-
-def _get_dotenv_path() -> FilePath:
-    """Resolve the .env file path (project root)."""
-    backend_dir = FilePath(__file__).resolve().parent.parent
-    root_dir = backend_dir.parent
-    return root_dir / ".env"
-
-
-def _boot_uris_env_key(namespace: str) -> str:
-    """Return the .env key for boot URIs for a given namespace."""
-    if namespace:
-        return f"CORE_MEMORY_URIS__{namespace}"
-    return "CORE_MEMORY_URIS"
-
-
-def _read_boot_uris(namespace: str = "") -> list[str]:
-    """Read boot URIs for the given namespace from .env or environment.
-
-    Resolution order: CORE_MEMORY_URIS__{namespace} → CORE_MEMORY_URIS (fallback).
-    """
-    env_path = _get_dotenv_path()
-    ns_key = _boot_uris_env_key(namespace)
-    fallback_key = "CORE_MEMORY_URIS"
-
-    env_vars = dotenv_values(env_path) if env_path.exists() else {}
-
-    val = None
-
-    if ns_key != fallback_key:
-        if ns_key in env_vars:
-            val = env_vars[ns_key]
-        elif ns_key in os.environ:
-            val = os.environ[ns_key]
-
-    if val is None:
-        if fallback_key in env_vars:
-            val = env_vars[fallback_key]
-        elif fallback_key in os.environ:
-            val = os.environ[fallback_key]
-
-    if not val:
-        return []
-    return [u.strip() for u in val.split(",") if u.strip()]
-
-
-def _write_boot_uris(uris: list[str], namespace: str = "") -> None:
-    """Write boot URIs for the given namespace to .env."""
-    env_path = _get_dotenv_path()
-    env_key = _boot_uris_env_key(namespace)
-    new_value = ",".join(uris)
-
-    if not env_path.exists():
-        env_path.write_text("", encoding="utf-8")
-
-    set_key(env_path, env_key, new_value)
-    os.environ[env_key] = new_value
+import re
 
 router = APIRouter(prefix="/browse", tags=["browse"])
 
@@ -91,6 +33,24 @@ class GlossaryAdd(BaseModel):
 class GlossaryRemove(BaseModel):
     keyword: str
     node_uuid: str
+
+
+class CreateMemoryRequest(BaseModel):
+    parent_path: str
+    content: str
+    priority: int
+    disclosure: str
+    title: str | None = None
+    domain: str = "core"
+
+
+class CreateAliasRequest(BaseModel):
+    new_path: str
+    target_path: str
+    disclosure: str
+    new_domain: str = "core"
+    target_domain: str = "core"
+    priority: int = 0
 
 
 @router.get("/namespaces")
@@ -112,8 +72,10 @@ async def list_namespaces():
 
 @router.get("/domains")
 async def list_domains():
-    """Return all domains that contain at least one root-level path."""
+    """Return all valid domains, with root-level node counts where applicable."""
     from sqlalchemy import func, distinct
+
+    valid_domains = config.get("valid_domains") or ["core"]
 
     db = get_db_manager()
     async with db.session() as session:
@@ -127,10 +89,20 @@ async def list_domains():
             .group_by(PathModel.domain)
             .order_by(PathModel.domain)
         )
-        return [
-            {"domain": row.domain, "root_count": row.node_count}
-            for row in result.all()
-        ]
+        db_counts = {row.domain: row.node_count for row in result.all()}
+
+    domains_to_return = []
+    seen = set()
+    for d in valid_domains:
+        domains_to_return.append({"domain": d, "root_count": db_counts.get(d, 0)})
+        seen.add(d)
+
+    for d, count in db_counts.items():
+        if d not in seen:
+            domains_to_return.append({"domain": d, "root_count": count})
+            seen.add(d)
+
+    return domains_to_return
 
 
 @router.get("/node")
@@ -182,7 +154,7 @@ async def get_node(
         memory = await graph.get_memory_by_path(path, domain=domain, namespace=get_namespace())
         
         if not memory:
-            raise HTTPException(status_code=404, detail=f"Path not found: {domain}://{path}")
+            raise HTTPException(status_code=404, detail=t("api.browse.path_not_found").format(uri=f"{domain}://{path}"))
         
         children_raw = await graph.get_children(
             memory["node_uuid"],
@@ -211,7 +183,7 @@ async def get_node(
             "approx_children_count": c.get("approx_children_count", 0)
         }
         for c in children_raw
-        if c["domain"] == domain
+        if c["domain"] == domain and c["path"] != ""
     ]
     children.sort(key=lambda x: (x["priority"] if x["priority"] is not None else 999, x["path"]))
     
@@ -286,7 +258,7 @@ async def update_node(
     # Check exists
     memory = await graph.get_memory_by_path(path, domain=domain, namespace=get_namespace())
     if not memory:
-        raise HTTPException(status_code=404, detail=f"Path not found: {domain}://{path}")
+        raise HTTPException(status_code=404, detail=t("api.browse.path_not_found").format(uri=f"{domain}://{path}"))
     
     # Update (creates new version if content changed, updates path metadata otherwise)
     try:
@@ -302,6 +274,144 @@ async def update_node(
         raise HTTPException(status_code=422, detail=str(e))
     
     return {"success": True, "memory_id": result["new_memory_id"]}
+
+
+@router.post("/node")
+async def create_node(body: CreateMemoryRequest):
+    """
+    Create a new memory node.
+
+    Human-facing direct edit endpoint: intentionally bypasses changeset/review.
+    """
+    graph = get_graph_service()
+
+    if not body.disclosure:
+        raise HTTPException(status_code=422, detail=t("api.browse.disclosure_empty"))
+
+    if body.title is not None and not re.match(r'^[a-zA-Z0-9_-]+$', body.title):
+        raise HTTPException(status_code=422, detail=t("api.browse.invalid_title"))
+
+    try:
+        result = await graph.create_memory(
+            parent_path=body.parent_path,
+            content=body.content,
+            priority=body.priority,
+            title=body.title,
+            disclosure=body.disclosure,
+            domain=body.domain,
+            namespace=get_namespace(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {"success": True, "uri": result["uri"], "memory_id": result["id"]}
+
+
+@router.post("/node/alias")
+async def create_alias(body: CreateAliasRequest):
+    """
+    Add an alias (alternate path) to an existing node.
+
+    Human-facing direct edit endpoint: intentionally bypasses changeset/review.
+    """
+    graph = get_graph_service()
+
+    if not body.disclosure:
+        raise HTTPException(status_code=422, detail=t("api.browse.disclosure_empty"))
+
+    try:
+        await graph.add_path(
+            new_path=body.new_path,
+            target_path=body.target_path,
+            new_domain=body.new_domain,
+            target_domain=body.target_domain,
+            priority=body.priority,
+            disclosure=body.disclosure,
+            namespace=get_namespace(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {"success": True, "uri": f"{body.new_domain}://{body.new_path}"}
+
+
+class RenameRequest(BaseModel):
+    path: str
+    new_name: str
+    domain: str = "core"
+
+
+@router.post("/node/rename")
+async def rename_node(body: RenameRequest):
+    """
+    Rename a memory by changing the last segment of its URI path.
+
+    Like renaming a folder: the node and all its children are moved
+    to the new path via add_path cascade + remove_path cleanup.
+
+    Human-facing direct edit endpoint: intentionally bypasses changeset/review.
+    """
+    graph = get_graph_service()
+
+    if not re.match(r'^[a-zA-Z0-9_-]+$', body.new_name):
+        raise HTTPException(
+            status_code=422,
+            detail=t("api.browse.invalid_name"),
+        )
+
+    old_path = body.path
+    old_uri = f"{body.domain}://{old_path}"
+
+    if "/" in old_path:
+        parent = old_path.rsplit("/", 1)[0]
+        new_path = f"{parent}/{body.new_name}"
+    else:
+        new_path = body.new_name
+    new_uri = f"{body.domain}://{new_path}"
+
+    if old_path == new_path:
+        return {"success": True, "old_uri": old_uri, "new_uri": new_uri, "unchanged": True}
+
+    memory = await graph.get_memory_by_path(old_path, domain=body.domain, namespace=get_namespace())
+    if not memory:
+        raise HTTPException(status_code=404, detail=t("api.browse.path_not_found").format(uri=old_uri))
+
+    try:
+        await graph.add_path(
+            new_path=new_path,
+            target_path=old_path,
+            new_domain=body.domain,
+            target_domain=body.domain,
+            priority=memory.get("priority", 0),
+            disclosure=memory.get("disclosure"),
+            namespace=get_namespace(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Remove old path. If this fails, roll back the new path to avoid
+    # leaving the node in a silent dual-path state the user won't notice.
+    try:
+        await graph.remove_path(old_path, body.domain, namespace=get_namespace())
+    except Exception as e:
+        try:
+            await graph.remove_path(new_path, body.domain, namespace=get_namespace())
+        except Exception:
+            pass  # best-effort rollback
+        raise HTTPException(
+            status_code=500,
+            detail=t("api.browse.rename_partial_failure").format(error=e),
+        )
+
+    await get_preset_service().rewrite_boot_uri(old_uri, new_uri, get_namespace())
+
+    return {
+        "success": True,
+        "old_uri": old_uri,
+        "new_uri": new_uri,
+        "old_path": old_path,
+        "new_path": new_path,
+    }
 
 
 # =============================================================================
@@ -339,43 +449,55 @@ async def remove_glossary_keyword(body: GlossaryRemove):
     glossary = get_glossary_service()
     result = await glossary.remove_glossary_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
     if not result.get("success"):
-        raise HTTPException(status_code=404, detail="Keyword binding not found")
+        raise HTTPException(status_code=404, detail=t("api.browse.keyword_not_found"))
     return {"success": True}
 
 
 # =============================================================================
-# Boot URI Management
+# Delete Endpoint
 # =============================================================================
 
 
-class BootUriToggle(BaseModel):
-    uri: str
-    enabled: bool
+@router.delete("/node")
+async def delete_node(
+    path: str = Query(...),
+    domain: str = Query("core"),
+):
+    """
+    Delete a memory by removing its URI path.
+
+    Human-facing direct delete: bypasses changeset/review queue.
+    Calls graph.remove_path() which handles orphan prevention.
+    """
+    graph = get_graph_service()
+
+    memory = await graph.get_memory_by_path(path, domain=domain, namespace=get_namespace())
+    if not memory:
+        raise HTTPException(status_code=404, detail=t("api.browse.path_not_found").format(uri=f"{domain}://{path}"))
+
+    try:
+        await graph.remove_path(path, domain, namespace=get_namespace())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    deleted_uri = f"{domain}://{path}"
+    await get_preset_service().purge_boot_uri(deleted_uri, get_namespace())
+
+    return {"success": True, "uri": deleted_uri}
 
 
-@router.get("/boot-uris")
-async def get_boot_uris():
-    """Return boot URIs for the current namespace."""
-    return {"uris": _read_boot_uris(get_namespace())}
+# =============================================================================
+# Search Endpoint
+# =============================================================================
 
 
-@router.put("/boot-uris")
-async def toggle_boot_uri(body: BootUriToggle):
-    """Add or remove a URI from the boot list for the current namespace."""
-    ns = get_namespace()
-    current = _read_boot_uris(ns)
-    uri = body.uri.strip()
-    if not uri:
-        raise HTTPException(status_code=422, detail="URI cannot be empty")
-
-    if not re.match(r"^[a-zA-Z0-9_-]+://[a-zA-Z0-9_/\.-]*$", uri):
-        raise HTTPException(status_code=422, detail="Invalid URI format")
-
-    if body.enabled:
-        if uri not in current:
-            current.append(uri)
-    else:
-        current = [u for u in current if u != uri]
-
-    _write_boot_uris(current, ns)
-    return {"success": True, "uris": current}
+@router.get("/search")
+async def search_memories(
+    q: str = Query(..., min_length=1, description="Search query"),
+    domain: Optional[str] = Query(None, description="Optional domain filter"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Full-text search across memories using the FTS index."""
+    search = get_search_indexer()
+    results = await search.search(q, limit=limit, domain=domain, namespace=get_namespace())
+    return {"query": q, "results": results, "count": len(results)}

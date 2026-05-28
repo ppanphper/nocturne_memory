@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from db import get_graph_service
 from db.models import MemoryAccessLog
 from db.namespace import get_namespace
+from locales import t
 from sqlalchemy import select, func, delete
 from datetime import datetime, timedelta
 from pydantic import BaseModel
@@ -34,7 +35,7 @@ async def get_orphan_detail(memory_id: int):
     graph = get_graph_service()
     detail = await graph.get_orphan_detail(memory_id)
     if not detail:
-        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+        raise HTTPException(status_code=404, detail=t("api.maintenance.memory_not_found").format(memory_id=memory_id))
     return detail
 
 

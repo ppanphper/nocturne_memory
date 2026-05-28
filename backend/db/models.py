@@ -22,6 +22,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    Index,
+    text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -239,6 +241,34 @@ class MemoryAccessLog(Base):
     context = Column(String(64), nullable=True)
 
     node = relationship("Node")
+
+
+class Preset(Base):
+    """Boot URI preset — a named set of boot URIs and path masks.
+
+    Only one preset can be active at a time (is_active=True).
+    The active preset determines which URIs are loaded at boot.
+    """
+
+    __tablename__ = "presets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False, unique=True)
+    boot_uris = Column(Text, nullable=False, default="{}")
+    path_masks = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index(
+            "uq_presets_active",
+            "is_active",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
 
 
 # =============================================================================

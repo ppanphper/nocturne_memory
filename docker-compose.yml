@@ -1,32 +1,27 @@
-# Before running: cp .env.example .env && edit .env
-# API_TOKEN is required. Generate one with:
-#   python -c "import secrets; print(secrets.token_urlsafe(32))"
+# Before running: python scripts/setup_docker.py
+# The setup script auto-generates .env with secure credentials.
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-nocturne_memory}
+      POSTGRES_USER: ${POSTGRES_USER:-nocturne}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/setup_docker.py first}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $$POSTGRES_DB -U $$POSTGRES_USER"]
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB:-nocturne_memory} -U $${POSTGRES_USER:-nocturne}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
-  backend-api:
+  backend:
     build:
       context: ./backend
-    command: uvicorn main:app --host 0.0.0.0 --port 8233
+    command: python run_sse.py
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?ssl=disable
-      API_TOKEN: ${API_TOKEN:?See .env.example}
-      VALID_DOMAINS: ${VALID_DOMAINS}
-      CORE_MEMORY_URIS: ${CORE_MEMORY_URIS}
       SNAPSHOT_DIR: /app/snapshots
     depends_on:
       postgres:
@@ -34,6 +29,7 @@ services:
     volumes:
       - snapshots_data:/app/snapshots
       - backups_data:/app/backups
+      - ./config.json:/app/config.json
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8233/health || exit 1"]
       interval: 10s
@@ -42,37 +38,13 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  backend-sse:
-    build:
-      context: ./backend
-    command: python run_sse.py
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?ssl=disable
-      API_TOKEN: ${API_TOKEN:?See .env.example}
-      VALID_DOMAINS: ${VALID_DOMAINS}
-      CORE_MEMORY_URIS: ${CORE_MEMORY_URIS}
-      SNAPSHOT_DIR: /app/snapshots
-      SKIP_DB_INIT: "true"
-      PORT: "8234"
-      HOST: 0.0.0.0
-      AUTO_OPEN_BROWSER: "false"
-    depends_on:
-      backend-api:
-        condition: service_healthy
-    volumes:
-      - snapshots_data:/app/snapshots
-      - backups_data:/app/backups
-    restart: unless-stopped
-
   nginx:
     build:
       context: ./frontend
     ports:
       - "${NGINX_PORT:-80}:80"
     depends_on:
-      backend-api:
-        condition: service_started
-      backend-sse:
+      backend:
         condition: service_started
     restart: unless-stopped
 

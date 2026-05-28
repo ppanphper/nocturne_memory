@@ -28,6 +28,25 @@ import tempfile
 
 from db.namespace import set_namespace
 
+_RESERVED_NAMESPACES = frozenset({"_ns_default_0x7f3a9e"})
+
+
+def _validate_namespace(ns: str) -> str | None:
+    """Return an error message if *ns* is reserved, else None."""
+    if ns in _RESERVED_NAMESPACES:
+        return f"Namespace '{ns}' is reserved and cannot be used."
+    return None
+
+
+async def _send_400(send: Send, detail: str) -> None:
+    import json
+    body = json.dumps({"detail": detail}).encode()
+    await send({"type": "http.response.start", "status": 400, "headers": [
+        [b"content-type", b"application/json"],
+        [b"content-length", str(len(body)).encode()],
+    ]})
+    await send({"type": "http.response.body", "body": body})
+
 class FileSSESessionStore:
     """A multi-process safe file-based store for SSE session namespaces.
     Replaces the in-memory dict to allow multiple workers to share the mapping.
@@ -103,6 +122,9 @@ class NamespaceMiddleware:
             ns = request.headers.get("x-namespace", "")
             if not ns:
                 ns = request.query_params.get("namespace", "")
+            if err := _validate_namespace(ns):
+                await _send_400(send, err)
+                return
             set_namespace(ns)
 
             # Wrap send so we can intercept FastMCP's outgoing "endpoint"
@@ -141,6 +163,9 @@ class NamespaceMiddleware:
                 ns = request.headers.get("x-namespace", "")
             if not ns:
                 ns = request.query_params.get("namespace", "")
+            if err := _validate_namespace(ns):
+                await _send_400(send, err)
+                return
             set_namespace(ns)
             await self.app(scope, receive, send)
 
@@ -149,5 +174,8 @@ class NamespaceMiddleware:
             ns = request.headers.get("x-namespace", "")
             if not ns:
                 ns = request.query_params.get("namespace", "")
+            if err := _validate_namespace(ns):
+                await _send_400(send, err)
+                return
             set_namespace(ns)
             await self.app(scope, receive, send)

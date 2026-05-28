@@ -13,8 +13,10 @@ import uvicorn
 # Ensure we can import from backend dir
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+import config as _cfg
 from auth import enforce_network_auth
-from mcp_server import mcp, build_web_app, FRONTEND_DIR
+from mcp_server import mcp
+from web_app import build_web_app
 
 
 def main():
@@ -24,8 +26,9 @@ def main():
     After running `npm run build` in frontend/, the admin UI is accessible
     at the same port — no separate dev server needed.
     """
-    port = int(os.getenv("PORT", 8233))
-    host = os.getenv("HOST", "127.0.0.1")
+    _cfg.ensure_config_exists()
+    port = int(_cfg.get("web_port"))
+    host = _cfg.get("host")
 
     enforce_network_auth(host=host)
 
@@ -56,8 +59,7 @@ def main():
     print(f"  REST API:    http://{host}:{port}/api/docs")
     print(f"  Admin UI:    http://{host}:{port}/")
 
-    auto_open = os.environ.get("AUTO_OPEN_BROWSER", "true").lower() not in ("false", "0", "no")
-    if auto_open:
+    if _cfg.get("auto_open_browser"):
         def _open_browser():
             time.sleep(1.5)
             webbrowser.open(f"http://localhost:{port}/")
