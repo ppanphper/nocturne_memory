@@ -99,6 +99,14 @@ async def update_settings(body: SettingsUpdate):
                 detail=t("api.settings.token_too_short").format(len=len(token)),
             )
 
+    if "valid_domains" in fields:
+        for d in fields["valid_domains"]:
+            if not re.match(r'^[a-z][a-z0-9_]*$', d):
+                raise HTTPException(
+                    status_code=422,
+                    detail=t("api.settings.validation_error"),
+                )
+
     pending_host = fields.get("host", config.get("host"))
     pending_token = fields.get("api_token", config.get("api_token"))
     if pending_host not in ("127.0.0.1", "localhost", "::1") and not pending_token:
@@ -110,7 +118,7 @@ async def update_settings(body: SettingsUpdate):
     for field_name, value in fields.items():
         config.set_value(field_name, value)
         updated.append(field_name)
-        if field_name in ("database_url", "host", "web_port", "api_token", "valid_domains", "public_readonly_mcp", "cors_origins"):
+        if field_name in ("database_url", "host", "web_port", "api_token", "public_readonly_mcp", "cors_origins"):
             needs_restart = True
 
     return {
@@ -187,12 +195,8 @@ def _resolve_ns(namespace: str) -> str:
 async def get_all_boot_uris():
     """Return boot URIs for every namespace at once (from active preset)."""
     from db import get_preset_service
-    import json
     service = get_preset_service()
-    active = await service.get_active_preset()
-    if active:
-        return {"boot_uris": json.loads(active.boot_uris)}
-    return {"boot_uris": config.get_all_boot_uris()}
+    return {"boot_uris": await service.get_all_boot_uris()}
 
 
 @router.put("/boot-uris/ns/{namespace}")

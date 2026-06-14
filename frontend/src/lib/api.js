@@ -13,9 +13,11 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  const ns = localStorage.getItem('selected_namespace');
-  if (ns && !config.url.startsWith('/review')) {
-    config.headers['X-Namespace'] = ns;
+  if (!('X-Namespace' in config.headers)) {
+    const ns = localStorage.getItem('selected_namespace');
+    if (ns && !config.url.startsWith('/review')) {
+      config.headers['X-Namespace'] = ns;
+    }
   }
   return config;
 });
@@ -55,6 +57,12 @@ export const clearAll = () =>
 
 export const getDomains = () =>
   api.get('/browse/domains').then(res => res.data);
+
+export const addDomain = (domain) =>
+  api.post('/browse/domains', { domain }).then(res => res.data);
+
+export const removeDomain = (domain) =>
+  api.delete(`/browse/domains/${encodeURIComponent(domain)}`).then(res => res.data);
 
 export const getNamespaces = () =>
   api.get('/browse/namespaces').then(res => res.data);

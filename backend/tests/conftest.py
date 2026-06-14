@@ -59,7 +59,6 @@ async def isolated_test_environment(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DATABASE_URL", db_url)
     monkeypatch.setenv("SNAPSHOT_DIR", str(snapshot_dir))
-    monkeypatch.setenv("VALID_DOMAINS", ",".join(VALID_DOMAINS[:-1]))
     monkeypatch.setenv("CORE_MEMORY_URIS", ",".join(CORE_MEMORY_URIS))
     monkeypatch.setenv("API_TOKEN", "")
 
@@ -85,8 +84,7 @@ async def isolated_test_environment(tmp_path, monkeypatch):
 
     await _reset_database(db_url)
 
-    mcp_server = _reload_module("mcp_server")
-    mcp_server.VALID_DOMAINS = VALID_DOMAINS
+    _reload_module("mcp_server")
 
     yield {
         "database_url": db_url,

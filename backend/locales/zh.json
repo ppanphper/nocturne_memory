@@ -39,7 +39,12 @@
       "sqlite_only": "仅适用于 SQLite 数据库",
       "parse_path_failed": "无法从 URL 解析数据库路径",
       "folder_not_found": "文件夹不存在: {path}",
-      "invalid_domain": "无效的域名"
+      "invalid_domain": "无效的域名",
+      "validation_error": "域名必须以字母开头，只能包含小写字母、数字和下划线。",
+      "core_remove_error": "\"core\" 域名不可移除。",
+      "system_reserved_error": "\"system\" 是保留域名，不可添加。",
+      "domain_in_use_error": "域名非空。任意命名空间中只要还存在该域名的记忆，就无法全局删除。请先处理这些记忆。",
+      "domain_boot_uri_conflict": "无法删除域名 \"{domain}\"：命名空间 {namespaces} 的启动记忆中仍在引用该域名。请先移除相关的启动记忆。"
     },
     "maintenance": {
       "memory_not_found": "记忆 {memory_id} 未找到",

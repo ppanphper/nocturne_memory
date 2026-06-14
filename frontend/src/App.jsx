@@ -129,6 +129,7 @@ function Layout() {
   const { t } = useTranslation();
   const location = useLocation();
   const isReviewPage = location.pathname.startsWith('/review');
+  const isMaintenancePage = location.pathname.startsWith('/maintenance');
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-200">
@@ -175,7 +176,7 @@ function Layout() {
         </nav>
 
         <div className="ml-auto flex items-center gap-4">
-          {!isReviewPage && <NamespaceSelector />}
+          {!isReviewPage && !isMaintenancePage && <NamespaceSelector />}
           <button
             onClick={() => window.dispatchEvent(new CustomEvent('open-settings'))}
             className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"

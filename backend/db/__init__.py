@@ -58,7 +58,13 @@ def _ensure_initialized():
     from .graph import GraphService
     from .presets import PresetService
 
-    _db_manager = DatabaseManager(database_url)
+    # _resolve_database_url() has already put backend/ on sys.path.
+    import config
+    _db_manager = DatabaseManager(
+        database_url,
+        pool_size=config.get("db_pool_size"),
+        max_overflow=config.get("db_max_overflow"),
+    )
     _search_indexer = SearchIndexer(_db_manager)
     _glossary_service = GlossaryService(_db_manager, _search_indexer)
     _graph_service = GraphService(_db_manager, _search_indexer)

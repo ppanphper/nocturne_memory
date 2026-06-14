@@ -17,10 +17,9 @@ import {
   Plus,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { api, getSettingsBootUris, toggleSettingsBootUri, deleteNode, searchMemories, createMemory } from '../../lib/api';
+import { api, getSettingsBootUris, toggleSettingsBootUri, deleteNode, searchMemories, createMemory, renameNode, addDomain, removeDomain, getDomains } from '../../lib/api';
 import { toast } from '../../components/Toast';
 import { useLocale } from '../../i18n/useLocale';
-import { renameNode } from '../../lib/api';
 import CreateMemoryModal from './components/CreateMemoryModal';
 import AliasManager from './components/AliasManager';
 import PriorityBadge from './components/PriorityBadge';
@@ -77,6 +76,14 @@ export default function MemoryBrowser() {
   // Create Memory
   const [showCreateModal, setShowCreateModal] = useState(false);
 
+  // Domain Management
+  const [showAddDomainInput, setShowAddDomainInput] = useState(false);
+  const [newDomainName, setNewDomainName] = useState('');
+  const [addingDomain, setAddingDomain] = useState(false);
+  const [showDeleteDomainConfirm, setShowDeleteDomainConfirm] = useState(false);
+  const [deletingDomain, setDeletingDomain] = useState(false);
+  const addDomainInputRef = useRef(null);
+
   // Search
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
@@ -91,7 +98,7 @@ export default function MemoryBrowser() {
   }, [domain, path]);
 
   useEffect(() => {
-    api.get('/browse/domains').then(res => setDomains(Array.isArray(res.data) ? res.data : [])).catch(() => {});
+    getDomains().then(data => setDomains(Array.isArray(data) ? data : [])).catch(() => {});
     getSettingsBootUris().then(res => setBootUris(res.uris)).catch(() => {});
   }, []);
 
@@ -100,12 +107,13 @@ export default function MemoryBrowser() {
       setLoading(true);
       setError(null);
       setEditing(false);
+      setShowDeleteDomainConfirm(false);
       try {
         const shouldRedirectAfterNamespaceSwitch = consumeNamespaceSwitchRedirect();
         if (shouldRedirectAfterNamespaceSwitch) {
-          const domainsRes = await api.get('/browse/domains');
-          const rootDomain = chooseRootDomain(domainsRes.data, domain);
-          setDomains(Array.isArray(domainsRes.data) ? domainsRes.data : []);
+          const domainsData = await getDomains();
+          const rootDomain = chooseRootDomain(domainsData, domain);
+          setDomains(Array.isArray(domainsData) ? domainsData : []);
           if (rootDomain && (path || rootDomain !== domain)) {
             setSearchParams({ domain: rootDomain }, { replace: true });
             return;
@@ -230,6 +238,67 @@ export default function MemoryBrowser() {
     await refreshData();
   };
 
+  const refreshDomainList = async () => {
+    const data = await getDomains();
+    const list = Array.isArray(data) ? data : [];
+    setDomains(list);
+    return list;
+  };
+
+  const handleAddDomain = async () => {
+    const trimmed = newDomainName.trim().toLowerCase();
+    if (!trimmed) return;
+    if (!/^[a-z][a-z0-9_]*$/.test(trimmed)) {
+      toast(t('settings.domains.validation_error'), "error");
+      return;
+    }
+    setAddingDomain(true);
+    try {
+      const result = await addDomain(trimmed);
+      
+      if (!result.added) {
+        toast(t('memory.domains.already_exists'), "error");
+        setAddingDomain(false);
+        return;
+      }
+      
+      await refreshDomainList();
+
+      setNewDomainName('');
+      setShowAddDomainInput(false);
+      toast(t('memory.domains.add_success'), "success");
+      
+      navigateTo('', trimmed);
+    } catch (err) {
+      toast(t('settings.domains.save_failed') + ': ' + (err.response?.data?.detail || err.message), "error");
+    } finally {
+      setAddingDomain(false);
+    }
+  };
+
+  const handleDeleteDomain = async () => {
+    if (domain === 'core') {
+      toast(t('settings.domains.core_remove_error'), "error");
+      return;
+    }
+    setDeletingDomain(true);
+    try {
+      await removeDomain(domain);
+      
+      const newDomains = await refreshDomainList();
+      
+      setShowDeleteDomainConfirm(false);
+      toast(t('memory.domains.delete_success'), "success");
+      
+      const nextDomain = newDomains[0]?.domain || 'core';
+      navigateTo('', nextDomain);
+    } catch (err) {
+      toast(t('settings.domains.save_failed') + ': ' + (err.response?.data?.detail || err.message), "error");
+    } finally {
+      setDeletingDomain(false);
+    }
+  };
+
   const handleSearch = useCallback((query) => {
     setSearchQuery(query);
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
@@ -282,26 +351,88 @@ export default function MemoryBrowser() {
         </div>
         
         <div className="p-3 flex-1 overflow-y-auto custom-scrollbar">
-             <div className="mb-4">
-                 <h3 className="px-3 text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">{t('memory.sidebar.domains')}</h3>
-                 {domains.map(d => (
-                   <DomainNode
-                     key={d.domain}
-                     domain={d.domain}
-                     rootCount={d.root_count}
-                     activeDomain={domain}
-                     activePath={path}
-                     onNavigate={navigateTo}
-                   />
-                 ))}
-                 {domains.length === 0 && (
-                   <DomainNode
-                     domain="core"
-                     activeDomain={domain}
-                     activePath={path}
-                     onNavigate={navigateTo}
-                   />
-                 )}
+             <div className="mb-4 space-y-2">
+                 <div className="px-3 flex items-center justify-between mb-2">
+                     <h3 className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">{t('memory.sidebar.domains')}</h3>
+                 </div>
+                 
+                 <div className="space-y-1">
+                   {domains.map(d => (
+                     <DomainNode
+                       key={d.domain}
+                       domain={d.domain}
+                       rootCount={d.root_count}
+                       activeDomain={domain}
+                       activePath={path}
+                       onNavigate={navigateTo}
+                     />
+                   ))}
+                   {domains.length === 0 && (
+                     <DomainNode
+                       domain="core"
+                       activeDomain={domain}
+                       activePath={path}
+                       onNavigate={navigateTo}
+                     />
+                   )}
+                 </div>
+
+                 {/* 域名追加交互 - 放在列表最下方 */}
+                 <div className="mt-1 px-1">
+                   {showAddDomainInput ? (
+                     <div className="flex items-center gap-1.5 animate-in slide-in-from-bottom-1 duration-200 px-2 py-1.5 rounded-lg bg-white/[0.02] border border-slate-800/40">
+                       <input
+                         type="text"
+                         ref={addDomainInputRef}
+                         value={newDomainName}
+                         onChange={e => setNewDomainName(e.target.value)}
+                         onKeyDown={e => {
+                           if (e.key === 'Enter') handleAddDomain();
+                           if (e.key === 'Escape') {
+                             setShowAddDomainInput(false);
+                             setNewDomainName('');
+                           }
+                         }}
+                         disabled={addingDomain}
+                         placeholder={t('memory.domains.add_domain_placeholder')}
+                         className="flex-1 min-w-0 bg-transparent text-slate-300 text-xs focus:outline-none placeholder:text-slate-700"
+                         spellCheck={false}
+                       />
+                       <button
+                         onClick={handleAddDomain}
+                         disabled={addingDomain || !newDomainName.trim()}
+                         className="p-1 text-slate-500 hover:text-indigo-400 disabled:opacity-30 transition-colors flex-shrink-0"
+                         title={t('memory.domains.add_domain')}
+                       >
+                         {addingDomain ? (
+                           <div className="w-3 h-3 border border-slate-500 border-t-transparent rounded-full animate-spin" />
+                         ) : (
+                           <Plus size={13} />
+                         )}
+                       </button>
+                       <button
+                         onClick={() => { setShowAddDomainInput(false); setNewDomainName(''); }}
+                         disabled={addingDomain}
+                         className="p-1 text-slate-500 hover:text-rose-400 disabled:opacity-40 transition-colors flex-shrink-0"
+                       >
+                         <X size={13} />
+                       </button>
+                     </div>
+                   ) : (
+                     <button
+                       onClick={() => {
+                         setShowAddDomainInput(true);
+                         setTimeout(() => addDomainInputRef.current?.focus(), 50);
+                       }}
+                       className="w-full flex items-center gap-1.5 px-2 py-2 rounded-lg text-slate-500 hover:bg-white/[0.03] hover:text-slate-300 text-sm transition-all text-left group"
+                     >
+                       <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
+                         <Plus size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors" />
+                       </div>
+                       <span className="font-medium truncate ml-1">{t('memory.domains.add_domain')}</span>
+                     </button>
+                   )}
+                 </div>
              </div>
         </div>
 
@@ -579,10 +710,19 @@ export default function MemoryBrowser() {
                         </div>
                     )}
                     
-                    {!loading && !data.children?.length && !node && (
-                        <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-4">
+                    {!loading && !data.children?.length && (!node || node.is_virtual) && (
+                        <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-4 animate-in fade-in duration-300">
                             <Folder size={48} className="opacity-20" />
                             <p className="text-sm">{t('memory.empty.empty_sector')}</p>
+                            {isRoot && domain !== 'core' && (
+                                <button
+                                    onClick={() => setShowDeleteDomainConfirm(true)}
+                                    className="mt-2 flex items-center gap-2 px-4 py-2 bg-rose-950/20 hover:bg-rose-950/40 text-rose-400 border border-rose-900/30 hover:border-rose-800/50 rounded-lg text-xs font-semibold transition-all shadow-[0_0_12px_rgba(244,63,94,0.05)]"
+                                >
+                                    <Trash2 size={13} />
+                                    {t('memory.domains.delete_domain')}
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>
@@ -633,6 +773,45 @@ export default function MemoryBrowser() {
                 className="px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors shadow-lg shadow-rose-900/20 disabled:opacity-50"
               >
                 {deleting ? t('memory.delete.deleting') : t('memory.delete.button')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Domain Confirmation Dialog */}
+      {showDeleteDomainConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !deletingDomain && setShowDeleteDomainConfirm(false)}>
+          <div className="bg-[#0C0C14] border border-slate-800 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 rounded-lg bg-rose-950/40 text-rose-400">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-100">{t('memory.domains.delete_confirm_title')}</h3>
+                <p className="text-xs text-rose-400/80 mt-0.5">{t('memory.domains.delete_confirm_warning')}</p>
+              </div>
+            </div>
+            <div className="mb-5 p-3 bg-slate-900/60 border border-slate-800/50 rounded-lg">
+              <code className="text-sm font-mono text-rose-300/80 break-all">{domain}://</code>
+            </div>
+            <p className="text-sm text-slate-400 mb-6 leading-relaxed">
+              {t('memory.domains.delete_confirm_message')}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowDeleteDomainConfirm(false)}
+                disabled={deletingDomain}
+                className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+              >
+                {t('memory.delete.cancel')}
+              </button>
+              <button
+                onClick={handleDeleteDomain}
+                disabled={deletingDomain}
+                className="px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors shadow-lg shadow-rose-900/20 disabled:opacity-50"
+              >
+                {deletingDomain ? t('memory.delete.deleting') : t('memory.delete.button')}
               </button>
             </div>
           </div>

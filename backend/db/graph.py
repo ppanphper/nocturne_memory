@@ -2026,6 +2026,7 @@ class GraphService:
                 category = "deprecated" if memory.migrated_to else "orphaned"
                 item = {
                     "id": memory.id,
+                    "node_uuid": memory.node_uuid,
                     "content_snippet": memory.content[:200] + "..."
                     if len(memory.content) > 200
                     else memory.content,
@@ -2072,6 +2073,7 @@ class GraphService:
 
             detail = {
                 "id": memory.id,
+                "node_uuid": memory.node_uuid,
                 "content": memory.content,
                 "created_at": memory.created_at.isoformat()
                 if memory.created_at
@@ -2143,3 +2145,110 @@ class GraphService:
             response["rows_after"] = {}
 
             return response
+
+    async def restore_orphan_memory(
+        self,
+        memory_id: int,
+        new_path: str,
+        new_domain: str = "core",
+        priority: int = 0,
+        disclosure: Optional[str] = None,
+        namespace: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Restore an orphan or deprecated memory by assigning a new path and
+        activating it (setting deprecated=False).
+        """
+        if not new_path:
+            raise ValueError("New path cannot be empty")
+
+        async with self.session() as session:
+            # 1. Fetch memory
+            result = await session.execute(
+                select(Memory).where(Memory.id == memory_id)
+            )
+            memory = result.scalar_one_or_none()
+            if not memory:
+                raise ValueError(f"Memory ID {memory_id} not found")
+
+            # 2. Resolve parent node UUID and check validity
+            if "/" in new_path:
+                parent_path = new_path.rsplit("/", 1)[0]
+                parent = await self._resolve_path(session, parent_path, new_domain, namespace=namespace)
+                if not parent:
+                    raise ValueError(
+                        f"Parent '{new_domain}://{parent_path}' does not exist. "
+                        f"Create the parent first, or use a shallower path."
+                    )
+                _, _, parent_uuid = parent
+            else:
+                parent_uuid = ROOT_NODE_UUID
+
+            # 3. Check for duplicates
+            existing = await session.execute(
+                select(Path).where(
+                    Path.namespace == namespace,
+                    Path.domain == new_domain,
+                    Path.path == new_path,
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f"Path '{new_domain}://{new_path}' already exists")
+
+            # 4. Reject historical deprecated versions of active nodes
+            # If memory.migrated_to is not None, it means this is a historical version of a node
+            # that has an active version elsewhere in the graph. We do not restore old versions here,
+            # we only restore true orphaned nodes that lost all their paths.
+            if memory.migrated_to is not None:
+                raise ValueError(
+                    "Historical deprecated versions of an active node cannot be restored. "
+                    "Only true orphaned memories (which lost all paths) can be restored."
+                )
+
+            target_node_uuid = memory.node_uuid
+            restored_memory_id = memory_id
+
+            # 5. Check for cycles
+            if await self._would_create_cycle(session, parent_uuid, target_node_uuid):
+                raise ValueError(
+                    f"Cannot restore memory to '{new_domain}://{new_path}': "
+                    f"this would create a cycle in the graph."
+                )
+
+            # 6. Bind the path (creates Edge and Path row(s))
+            await self._create_edge_with_paths(
+                session,
+                parent_uuid,
+                target_node_uuid,
+                new_path.rsplit("/", 1)[-1],
+                new_domain,
+                new_path,
+                priority=priority,
+                disclosure=disclosure,
+                namespace=namespace,
+            )
+
+            # 7. For true orphans, deprecate other versions (if any) and un-deprecate the target memory
+            await self._deprecate_node_memories(
+                session,
+                target_node_uuid,
+                successor_id=restored_memory_id,
+            )
+            await session.execute(
+                update(Memory)
+                .where(Memory.id == restored_memory_id)
+                .values(deprecated=False, migrated_to=None)
+            )
+
+            # 8. Refresh Search Index
+            await self._search.refresh_search_documents_for_node(
+                target_node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True
+            )
+
+            return {
+                "success": True,
+                "memory_id": restored_memory_id,
+                "node_uuid": target_node_uuid,
+                "uri": f"{new_domain}://{new_path}"
+            }
+

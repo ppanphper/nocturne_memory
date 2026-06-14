@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from db import get_graph_service
 from db.models import MemoryAccessLog
 from db.namespace import get_namespace
+from namespace_middleware import _validate_namespace
 from locales import t
 from sqlalchemy import select, func, delete
 from datetime import datetime, timedelta
@@ -60,21 +61,18 @@ async def delete_orphan(memory_id: int):
 @router.get("/access-logs/stats")
 async def get_access_log_stats():
     """
-    Get stats for access logs (total count, oldest record date) for the current namespace.
+    Get global stats for access logs (total count, oldest record date).
     """
     graph = get_graph_service()
-    
+
     async with graph.session() as session:
-        ns = get_namespace()
         count = await session.scalar(
             select(func.count(MemoryAccessLog.id))
-            .where(MemoryAccessLog.namespace == ns)
         )
         oldest = await session.scalar(
             select(func.min(MemoryAccessLog.accessed_at))
-            .where(MemoryAccessLog.namespace == ns)
         )
-        
+
     return {
         "count": count or 0,
         "oldest": oldest.isoformat() if oldest else None
@@ -87,18 +85,50 @@ class ClearLogsRequest(BaseModel):
 @router.delete("/access-logs")
 async def clear_access_logs(req: ClearLogsRequest):
     """
-    Clear access logs. If keep_days is provided, deletes logs older than X days.
+    Clear access logs globally. If keep_days is provided, deletes logs older than X days.
     If keep_days is 0 or None, deletes all logs.
     """
     graph = get_graph_service()
-    
+
     async with graph.session() as session:
-        ns = get_namespace()
-        stmt = delete(MemoryAccessLog).where(MemoryAccessLog.namespace == ns)
-        
+        stmt = delete(MemoryAccessLog)
+
         if req.keep_days and req.keep_days > 0:
             cutoff = datetime.now() - timedelta(days=req.keep_days)
             stmt = stmt.where(MemoryAccessLog.accessed_at < cutoff)
-            
+
         result = await session.execute(stmt)
         return {"deleted": result.rowcount}
+
+
+class RestoreOrphanRequest(BaseModel):
+    new_domain: str = "core"
+    new_path: str
+    priority: int = 0
+    disclosure: Optional[str] = None
+    namespace: Optional[str] = None
+
+
+@router.post("/orphans/{memory_id}/restore")
+async def restore_orphan(memory_id: int, req: RestoreOrphanRequest):
+    """
+    Restore an orphan or deprecated memory by assigning a new path and
+    activating it (deprecated=False).
+    """
+    graph = get_graph_service()
+    target_namespace = (req.namespace if req.namespace is not None else get_namespace()).strip()
+    if err := _validate_namespace(target_namespace):
+        raise HTTPException(status_code=422, detail=err)
+    try:
+        result = await graph.restore_orphan_memory(
+            memory_id=memory_id,
+            new_path=req.new_path,
+            new_domain=req.new_domain,
+            priority=req.priority,
+            disclosure=req.disclosure,
+            namespace=target_namespace,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+

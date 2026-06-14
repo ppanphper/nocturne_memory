@@ -105,6 +105,73 @@ async def list_domains():
     return domains_to_return
 
 
+class AddDomainRequest(BaseModel):
+    domain: str
+
+
+@router.post("/domains")
+async def add_domain(body: AddDomainRequest):
+    domain = body.domain.strip().lower()
+    if not re.match(r'^[a-z][a-z0-9_]*$', domain):
+        raise HTTPException(status_code=422, detail=t("api.settings.validation_error"))
+    if domain == "system":
+        raise HTTPException(status_code=400, detail=t("api.settings.system_reserved_error"))
+
+    current = list(config.get("valid_domains") or ["core"])
+    if domain not in current:
+        current.append(domain)
+        config.set_value("valid_domains", current)
+        return {"success": True, "domain": domain, "added": True}
+
+    return {"success": True, "domain": domain, "added": False}
+
+
+@router.delete("/domains/{domain}")
+async def remove_domain(domain: str):
+    domain = domain.strip().lower()
+    if domain in ("core", "system"):
+        raise HTTPException(status_code=400, detail=t("api.settings.core_remove_error"))
+        
+    db = get_db_manager()
+    async with db.session() as session:
+        result = await session.execute(
+            select(PathModel.path)
+            .where(PathModel.domain == domain)
+            .limit(1)
+        )
+        if result.first():
+            raise HTTPException(
+                status_code=409, 
+                detail=t("api.settings.domain_in_use_error")
+            )
+
+    # Check if any boot URI across ALL presets references this domain
+    service = get_preset_service()
+    all_presets = await service.list_presets()
+    domain_prefix = f"{domain}://"
+    referencing = []
+    for preset in all_presets:
+        for ns, uris in preset["boot_uris"].items():
+            if any(u == domain_prefix or u.startswith(domain_prefix) for u in uris):
+                label = ns if ns else "(default)"
+                referencing.append(f"{preset['name']}:{label}")
+
+    if referencing:
+        raise HTTPException(
+            status_code=409,
+            detail=t("api.settings.domain_boot_uri_conflict").format(
+                domain=domain, namespaces=", ".join(referencing)
+            ),
+        )
+
+    current = list(config.get("valid_domains") or ["core"])
+    if domain in current:
+        current.remove(domain)
+        config.set_value("valid_domains", current)
+
+    return {"success": True, "domain": domain}
+
+
 @router.get("/node")
 async def get_node(
     path: str = Query("", description="URI path like 'nocturne' or 'nocturne/salem'"),

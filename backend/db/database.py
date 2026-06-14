@@ -18,6 +18,19 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 
 from .models import Base
 
+# Default PostgreSQL pool sizing, mirrored in config.DEFAULTS.
+# Sized for the typical single-user MCP workload.
+DEFAULT_POOL_SIZE = 5
+DEFAULT_MAX_OVERFLOW = 5
+
+
+def _coerce_pool(value, default: int) -> int:
+    """Coerce a hand-edited config value to a sane pool integer."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
 
 class DatabaseManager:
     """Async database connection manager.
@@ -28,7 +41,12 @@ class DatabaseManager:
     from it.
     """
 
-    def __init__(self, database_url: str):
+    def __init__(
+        self,
+        database_url: str,
+        pool_size: Optional[int] = None,
+        max_overflow: Optional[int] = None,
+    ):
         self.database_url = database_url
         self.db_type = self._detect_database_type(database_url)
 
@@ -49,8 +67,10 @@ class DatabaseManager:
 
             engine_kwargs.update(
                 {
-                    "pool_size": 10,
-                    "max_overflow": 20,
+                    # pool_size=0 would mean *unlimited* in SQLAlchemy — clamp to >= 1.
+                    # max_overflow=0 is legitimate (hard cap at pool_size), so no clamp.
+                    "pool_size": max(1, _coerce_pool(pool_size, DEFAULT_POOL_SIZE)),
+                    "max_overflow": _coerce_pool(max_overflow, DEFAULT_MAX_OVERFLOW),
                     "pool_recycle": 3600,
                     "pool_pre_ping": True,
                     "connect_args": connect_args,
@@ -64,6 +84,9 @@ class DatabaseManager:
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()
 
         self.async_session = async_sessionmaker(

@@ -15,8 +15,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           // 避免 Windows 下优先解析 ::1 导致 IPv6 拒绝连接
           target: apiTarget,
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, '')
+          changeOrigin: true
         }
       }
     },

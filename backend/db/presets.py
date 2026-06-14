@@ -52,18 +52,20 @@ class PresetService:
             )
             return result.scalar_one_or_none()
 
+    async def get_all_boot_uris(self) -> dict[str, list[str]]:
+        """Get the full boot_uris dict (all namespaces), from active preset or config fallback."""
+        active = await self.get_active_preset()
+        if active:
+            return json.loads(active.boot_uris)
+        import config
+        return config.get_all_boot_uris()
+
     async def get_boot_uris(self, namespace: str = "") -> list[str]:
         """Get boot URIs for a namespace from the active preset, with config fallback."""
-        async with self.db.session() as session:
-            active = await self.get_active_preset(session)
-            if active:
-                boot_map = json.loads(active.boot_uris)
-                if namespace in boot_map:
-                    return boot_map[namespace]
-                return boot_map.get("", [])
-
-        import config
-        return config.get_boot_uris(namespace)
+        boot_map = await self.get_all_boot_uris()
+        if namespace in boot_map:
+            return boot_map[namespace]
+        return boot_map.get("", [])
 
     async def set_boot_uris(self, namespace: str, uris: list[str]) -> None:
         """Set boot URIs for a namespace. Writes to active preset or config fallback."""

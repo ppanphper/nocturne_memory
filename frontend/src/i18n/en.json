@@ -144,6 +144,7 @@
     "domains": {
       "validation_error": "Domain names must start with a letter and can only contain lowercase letters, numbers, and underscores.",
       "core_remove_error": "The \"core\" domain cannot be removed.",
+      "domain_in_use_error": "Domain is not empty. It contains memories in some namespace. Please process them first before deleting the domain globally.",
       "placeholder": "New domain",
       "add": "Add",
       "restart_warning": "Server restart required to apply changes",
@@ -185,6 +186,17 @@
   },
 
   "memory": {
+    "domains": {
+      "already_exists": "Domain already exists",
+      "add_success": "Domain added successfully",
+      "delete_success": "Domain deleted successfully",
+      "delete_domain": "Delete Domain",
+      "delete_confirm_title": "Confirm Delete Domain",
+      "delete_confirm_warning": "This domain will be removed from your valid domains configuration.",
+      "delete_confirm_message": "Are you sure you want to delete this domain? Active memories under this domain might become inaccessible unless the domain is added back.",
+      "add_domain": "Add Domain",
+      "add_domain_placeholder": "New domain..."
+    },
     "sidebar": {
       "title": "Memory Core",
       "subtitle": "Neural Explorer v2.0",
@@ -376,7 +388,9 @@
     "badge": {
       "deprecated": "Deprecated",
       "orphaned": "Orphaned",
-      "unknown_date": "Unknown"
+      "unknown_date": "Unknown",
+      "node_prefix": "Node:",
+      "mem_prefix": "Mem: #{{id}}"
     },
     "detail": {
       "target_no_paths": "Target #{{id}} also has no paths",
@@ -384,7 +398,21 @@
       "error_prefix": "Error: {{error}}",
       "old_version": "Old Version (this memory)",
       "full_content": "Full Content",
-      "diff_header": "Diff: #{{fromId}} → #{{toId}}"
+      "diff_header": "Diff: #{{fromId}} → #{{toId}}",
+      "restore_btn": "Restore Memory",
+      "restore_title": "Restore Memory Configuration",
+      "restore_domain_label": "Domain",
+      "restore_path_label": "Target Path",
+      "restore_parent_placeholder": "Select parent path",
+      "restore_leaf_placeholder": "New segment name",
+      "restore_disclosure_placeholder": "Enter trigger condition (Disclosure)",
+      "restore_priority_label": "Priority",
+      "restore_namespace_label": "Namespace",
+      "restore_namespace_default": "(default)",
+      "restore_confirm_btn": "Confirm Restore",
+      "restore_cancel_btn": "Cancel",
+      "restore_success_toast": "Memory restored successfully at {{uri}}",
+      "restore_failed_toast": "Failed to restore memory: {{error}}"
     },
     "select": {
       "deselect_all": "Deselect All",
@@ -396,9 +424,7 @@
     },
     "stats": {
       "deprecated_label": "Deprecated",
-      "deprecated_desc": "Old versions from updates",
       "orphaned_label": "Orphaned",
-      "orphaned_desc": "Inaccessible (no paths)",
       "access_logs_label": "Access Logs",
       "clearing": "Clearing...",
       "clear_button": "Clear",
@@ -417,6 +443,13 @@
     "section": {
       "deprecated_versions": "Deprecated Versions",
       "orphaned_memories": "Orphan Memories"
+    },
+    "group": {
+      "all": "All Memories",
+      "deprecated_groups": "Deprecated Groups",
+      "orphaned_section": "Orphan Memories",
+      "orphaned_group": "Orphan Memories (no paths)",
+      "no_path": "Target #{{id}} (no paths)"
     }
   },
 

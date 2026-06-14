@@ -140,6 +140,7 @@
     "domains": {
       "validation_error": "域名必须以字母开头，只能包含小写字母、数字和下划线。",
       "core_remove_error": "\"core\" 域名不可移除。",
+      "domain_in_use_error": "域名非空。任意命名空间中只要还存在该域名的记忆，就无法全局删除。请先处理这些记忆。",
       "placeholder": "新域名",
       "add": "添加",
       "restart_warning": "需要重启服务器才能生效",
@@ -180,6 +181,17 @@
     }
   },
   "memory": {
+    "domains": {
+      "already_exists": "该域名已存在",
+      "add_success": "域名添加成功",
+      "delete_success": "域名删除成功",
+      "delete_domain": "删除该域名",
+      "delete_confirm_title": "确认删除域名",
+      "delete_confirm_warning": "该域名将从有效域名配置中移除。",
+      "delete_confirm_message": "确定要删除此域名吗？删除后，除非重新添加该域名，否则该域名下的所有现有记忆都将无法在记忆浏览器中直接访问。",
+      "add_domain": "添加域名",
+      "add_domain_placeholder": "新域名..."
+    },
     "sidebar": {
       "title": "记忆核心",
       "subtitle": "神经探索者 v2.0",
@@ -369,7 +381,9 @@
     "badge": {
       "deprecated": "已弃用",
       "orphaned": "孤儿",
-      "unknown_date": "未知"
+      "unknown_date": "未知",
+      "node_prefix": "节点：",
+      "mem_prefix": "记忆 #{{id}}"
     },
     "detail": {
       "target_no_paths": "目标 #{{id}} 也无路径",
@@ -377,7 +391,21 @@
       "error_prefix": "错误：{{error}}",
       "old_version": "旧版本（此记忆）",
       "full_content": "完整内容",
-      "diff_header": "差异：#{{fromId}} → #{{toId}}"
+      "diff_header": "差异：#{{fromId}} → #{{toId}}",
+      "restore_btn": "恢复此记忆",
+      "restore_title": "恢复记忆配置",
+      "restore_domain_label": "域名",
+      "restore_path_label": "目标路径",
+      "restore_parent_placeholder": "选择父路径",
+      "restore_leaf_placeholder": "新节点名称",
+      "restore_disclosure_placeholder": "输入触发条件（Disclosure）",
+      "restore_priority_label": "优先级",
+      "restore_namespace_label": "命名空间",
+      "restore_namespace_default": "（默认）",
+      "restore_confirm_btn": "确认恢复",
+      "restore_cancel_btn": "取消",
+      "restore_success_toast": "记忆恢复成功，新路径：{{uri}}",
+      "restore_failed_toast": "恢复记忆失败：{{error}}"
     },
     "select": {
       "deselect_all": "取消全选",
@@ -389,9 +417,7 @@
     },
     "stats": {
       "deprecated_label": "已弃用",
-      "deprecated_desc": "更新产生的旧版本",
       "orphaned_label": "孤儿",
-      "orphaned_desc": "无法访问（无路径）",
       "access_logs_label": "访问日志",
       "clearing": "清除中...",
       "clear_button": "清除",
@@ -410,6 +436,13 @@
     "section": {
       "deprecated_versions": "已弃用版本",
       "orphaned_memories": "孤儿记忆"
+    },
+    "group": {
+      "all": "所有记忆",
+      "deprecated_groups": "已弃用分组",
+      "orphaned_section": "孤儿记忆",
+      "orphaned_group": "孤儿记忆（无路径）",
+      "no_path": "目标 #{{id}}（无路径）"
     }
   },
   "snapshot": {

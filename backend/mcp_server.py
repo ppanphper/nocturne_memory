@@ -223,12 +223,15 @@ mcp = FastMCP(
 # Valid domains (protocol prefixes)
 # =============================================================================
 
-_domains_from_config = _cfg.get("valid_domains")
-VALID_DOMAINS = _domains_from_config if isinstance(_domains_from_config, list) else [
-    d.strip() for d in str(_domains_from_config).split(",") if d.strip()
-]
-if "system" not in VALID_DOMAINS:
-    VALID_DOMAINS.append("system")
+def get_valid_domains() -> list[str]:
+    raw = _cfg.get("valid_domains")
+    domains = raw if isinstance(raw, list) else [
+        d.strip() for d in str(raw).split(",") if d.strip()
+    ]
+    if "system" not in domains:
+        domains.append("system")
+    return domains
+
 DEFAULT_DOMAIN = "core"
 PUBLIC_READONLY_MCP = bool(_cfg.get("public_readonly_mcp"))
 
@@ -267,9 +270,10 @@ def parse_uri(uri: str) -> Tuple[str, str]:
         domain = match.group(1).lower()
         path = match.group(2).strip("/")
 
-        if domain not in VALID_DOMAINS:
+        valid = get_valid_domains()
+        if domain not in valid:
             raise ValueError(
-                f"Unknown domain '{domain}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+                f"Unknown domain '{domain}'. Valid domains: {', '.join(valid)}"
             )
 
         return (domain, path)
@@ -376,8 +380,9 @@ async def read_memory(uri: str) -> str:
         domain_filter = stripped[len("system://index/") :].strip("/")
         if not domain_filter:
             return "Error: index command requires a domain (e.g. system://index/core)"
-        if domain_filter not in VALID_DOMAINS:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+        valid = get_valid_domains()
+        if domain_filter not in valid:
+            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
         return await generate_memory_index_view(domain_filter=domain_filter)
     elif stripped == "system://index":
         return "Error: index command now requires a domain (e.g. system://index/core)"
@@ -391,8 +396,9 @@ async def read_memory(uri: str) -> str:
         domain_filter = stripped[len("system://diagnostic/") :].strip("/")
         if not domain_filter:
             return "Error: diagnostic command requires a domain (e.g. system://diagnostic/core)"
-        if domain_filter not in VALID_DOMAINS:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+        valid = get_valid_domains()
+        if domain_filter not in valid:
+            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
         return await generate_diagnostic_view(domain=domain_filter)
     elif stripped == "system://diagnostic":
         return "Error: diagnostic command now requires a domain (e.g. system://diagnostic/core)"
@@ -414,9 +420,10 @@ async def read_memory(uri: str) -> str:
         domain_filter = stripped[len("system://random/") :].strip("/")
         if not domain_filter:
             return "Error: random command requires a domain (e.g. system://random/core)"
-        if domain_filter not in VALID_DOMAINS:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(VALID_DOMAINS)}"
-            
+        valid = get_valid_domains()
+        if domain_filter not in valid:
+            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
+
         graph = get_graph_service()
         pick = await graph.get_random_memory(namespace=get_namespace(), domain=domain_filter)
         if not pick:
@@ -1062,8 +1069,9 @@ async def search_memory(
 
     try:
         # Validate domain if provided
-        if domain is not None and domain not in VALID_DOMAINS:
-            return f"Error: Unknown domain '{domain}'. Valid domains: {', '.join(VALID_DOMAINS)}"
+        valid = get_valid_domains()
+        if domain is not None and domain not in valid:
+            return f"Error: Unknown domain '{domain}'. Valid domains: {', '.join(valid)}"
 
         results = await search.search(query, limit, domain, namespace=get_namespace())
 

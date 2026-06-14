@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Database, Server, Layers, Tag, Settings, X, RefreshCw, Globe
+  Database, Server, Layers, Settings, X, RefreshCw, Globe
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import i18n, { detectLocale } from '../../i18n';
@@ -10,7 +10,6 @@ import Section from './Section';
 import DatabaseSection from './DatabaseSection';
 import PresetsSection from './PresetsSection';
 import BootUrisSection from './BootUrisSection';
-import DomainsSection from './DomainsSection';
 import ServerSection from './ServerSection';
 import AdvancedSection from './AdvancedSection';
 import LocaleSection from './LocaleSection';
@@ -179,10 +178,6 @@ export default function SettingsDrawer() {
                 <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-200">
                   <Section icon={Layers} title={t('app.settings.section_presets')}>
                     <PresetsSection />
-                  </Section>
-
-                  <Section icon={Tag} title={t('app.settings.section_domains')}>
-                    <DomainsSection settings={settings} onSave={handleSave} />
                   </Section>
                 </div>
               )}
