@@ -6,7 +6,7 @@ hierarchical browser. Every path is just a node with content and children.
 """
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import config
 from db import get_graph_service, get_glossary_service, get_db_manager, get_search_indexer, get_preset_service
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/browse", tags=["browse"])
 
 class NodeUpdate(BaseModel):
     content: str | None = None
-    priority: int | None = None
+    priority: int | None = Field(default=None, ge=0)
     disclosure: str | None = None
 
 
@@ -38,7 +38,7 @@ class GlossaryRemove(BaseModel):
 class CreateMemoryRequest(BaseModel):
     parent_path: str
     content: str
-    priority: int
+    priority: int = Field(ge=0)
     disclosure: str
     title: str | None = None
     domain: str = "core"
@@ -50,7 +50,7 @@ class CreateAliasRequest(BaseModel):
     disclosure: str
     new_domain: str = "core"
     target_domain: str = "core"
-    priority: int = 0
+    priority: int = Field(default=0, ge=0)
 
 
 @router.get("/namespaces")

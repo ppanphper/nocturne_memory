@@ -399,9 +399,8 @@ async def generate_diagnostic_view(domain: str, days_stale: int = 30, max_childr
     graph = get_graph_service()
 
     try:
-        priority_thresholds = {0: 3, 1: 7, 2: 14}
         diagnostics = await graph.get_diagnostics(
-            namespace=get_namespace(), days_stale=days_stale, max_children=max_children, priority_thresholds=priority_thresholds, domain=domain
+            namespace=get_namespace(), days_stale=days_stale, max_children=max_children, domain=domain
         )
 
         stale_nodes = diagnostics.get("stale_nodes", [])
@@ -422,7 +421,7 @@ async def generate_diagnostic_view(domain: str, days_stale: int = 30, max_childr
             lines.extend([
                 "## 1. Stale Memories",
                 "Nodes not accessed within their priority threshold.",
-                f"Thresholds: Priority 0 (<3 days), Priority 1 (<7 days), Priority 2 (<14 days), Others (<{days_stale} days).",
+                "Thresholds double for each priority level: Priority 0 (<3 days), Priority 1 (<7 days), Priority 2 (<14 days), Priority 3 (<28 days), etc.",
                 ""
             ])
 

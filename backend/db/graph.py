@@ -441,8 +441,6 @@ class GraphService:
         Returns stale nodes and crowded parent nodes.
         """
         from datetime import datetime, timedelta
-        if priority_thresholds is None:
-            priority_thresholds = {0: 3, 1: 7, 2: 14}
             
         async with self.session() as session:
             # First find when we actually started tracking last_accessed_at
@@ -482,7 +480,18 @@ class GraphService:
 
                 # Determine the threshold based on priority
                 prio = edge.priority if edge.priority is not None else 999
-                threshold_days = priority_thresholds.get(prio, days_stale)
+                if priority_thresholds and prio in priority_thresholds:
+                    threshold_days = priority_thresholds[prio]
+                elif prio != 999:
+                    # Automatically calculate: priority 0 -> 3, priority 1 -> 7, priority 2 -> 14, priority 3 -> 28, etc.
+                    # Cap priority between 0 and 20 to prevent OverflowError and negative zero-threshold bugs
+                    safe_prio = max(0, min(prio, 20))
+                    threshold_days = 3 if safe_prio == 0 else int(3.5 * (2 ** safe_prio))
+                    # Cap at 36500 days (~100 years) to keep UI and logic sane
+                    threshold_days = min(threshold_days, 36500)
+                else:
+                    threshold_days = days_stale
+                    
                 cutoff_date = datetime.now() - timedelta(days=threshold_days)
 
                 if effective_date < cutoff_date:
